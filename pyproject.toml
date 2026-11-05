@@ -1,0 +1,22 @@
+[project]
+name = "digital-thread-integration"
+version = "0.1.0"
+description = "Research software for digital thread integration"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "jupyter",
+    "ipykernel",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/digital_thread"]
