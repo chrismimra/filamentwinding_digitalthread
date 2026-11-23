@@ -5,5 +5,11 @@ __pycache__/
 # Python virtual environment
 .venv/
 
+#VS Code settings
+04_DigitalThreadIntegration.code-workspace
+
 #temporary files
 notebooks/temp_data/
+
+#synthetic data generator and its output
+src/synthetic_data/

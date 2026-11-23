@@ -1,0 +1,39 @@
+{
+  "run_id": "synthetic_cylinder",
+  "calibration": "../calibration",
+  "tow_file": "planned_path.csv",
+  "tow_width_mm": 6.35,
+  "polar_pattern": [
+    90,
+    45,
+    135,
+    0
+  ],
+  "camera_settings": {
+    "exposure_us": 2000,
+    "gain_db": 0.0
+  },
+  "nominal_period_s": 12.0,
+  "frames": [
+    {
+      "name": "reference",
+      "file": "reference_raw.npz",
+      "timestamp_s": 0.0
+    },
+    {
+      "name": "rev000",
+      "file": "rev000_raw.npz",
+      "timestamp_s": 12.0
+    },
+    {
+      "name": "rev001",
+      "file": "rev001_raw.npz",
+      "timestamp_s": 24.0
+    },
+    {
+      "name": "rev002",
+      "file": "rev002_raw.npz",
+      "timestamp_s": 36.0
+    }
+  ]
+}
