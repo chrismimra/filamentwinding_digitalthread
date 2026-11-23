@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from digital_thread import forward_model, touch_down
+from digital_thread import conversion, forward_model, touch_down
 
 NOTEBOOK = Path(__file__).parents[1] / "notebooks" / "01_DigitalThreadNotebook.ipynb"
 
@@ -52,6 +52,17 @@ def test_forward_model_matches_notebook():
     )
     assert forward_model.DOLP == nb["DOLP"]
     assert forward_model.ALBEDO == nb["ALBEDO"]
+
+
+def test_conversion_matches_notebook():
+    nb = notebook_cell("# Conversion")
+    rng = np.random.default_rng(3)
+    raw = rng.integers(0, 4096, (40, 60)).astype(np.uint16)  # includes saturated
+    pattern = (90, 45, 135, 0)
+    ours, theirs = conversion.convert(raw, pattern), nb["convert"](raw, pattern)
+    for name in ("s0", "dolp", "aolp"):
+        np.testing.assert_array_equal(getattr(ours, name), getattr(theirs, name))
+    assert nb["AOLP_SIGN"] == conversion.AOLP_SIGN
 
 
 def test_touch_down_model_matches_notebook():

@@ -2,7 +2,9 @@
 
 A calibration bundle is a folder with `calibration.json` and `mesh.npz`.
 A run folder holds `run.json` and one compressed raw frame per entry of the
-frame log (`<name>_raw.npz`, key `raw`, uint16, 3000 x 4096).
+frame log (`<name>_raw.npz`, key `raw`, uint16, 3000 x 4096). Conversion adds
+the polarisation maps per frame (`<name>_polarisation.npz`, keys `s0`, `dolp`,
+`aolp`, float32, 1500 x 2048).
 
 Intrinsics refer to the super-pixel image (2048 x 1500), the resolution of
 S0, DoLP and AoLP. The pose maps world (STEP frame, mm) to camera
@@ -137,6 +139,40 @@ def read_frame(run: Run, name: str) -> np.ndarray:
     frame = next(f for f in run.frames if f.name == name)
     with np.load(run.folder / frame.file) as data:
         return data["raw"]
+
+
+@dataclass
+class PolarisationMaps:
+    """S0, DoLP and AoLP (deg, image angle) of one frame per super-pixel, float32."""
+
+    s0: np.ndarray
+    dolp: np.ndarray
+    aolp: np.ndarray
+
+
+def polarisation_file(name: str) -> str:
+    """Polarisation maps file name: `reference_polarisation.npz`, ..."""
+    return f"{name}_polarisation.npz"
+
+
+def write_polarisation(folder, name: str, maps: PolarisationMaps):
+    """Write the polarisation maps of frame `name` into `folder`.
+
+    Takes a folder rather than a Run: production passes the run folder, the
+    notebook its save location, so the committed synthetic run stays unchanged.
+    """
+    np.savez_compressed(
+        Path(folder) / polarisation_file(name),
+        s0=maps.s0.astype(np.float32),
+        dolp=maps.dolp.astype(np.float32),
+        aolp=maps.aolp.astype(np.float32),
+    )
+
+
+def read_polarisation(folder, name: str) -> PolarisationMaps:
+    """Read the polarisation maps of frame `name` from `folder`."""
+    with np.load(Path(folder) / polarisation_file(name)) as data:
+        return PolarisationMaps(data["s0"], data["dolp"], data["aolp"])
 
 
 PATH_HEADER = "Point number,X-coordinate (mm),Y-coordinate (mm),Z-coordinate (mm)"
