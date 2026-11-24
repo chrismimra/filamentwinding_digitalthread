@@ -269,11 +269,11 @@ TOW_TABLE_COLUMNS = (
 )
 
 
-def write_tow_table(folder, rows: list[dict]):
+def write_tow_table(folder, rows: list[dict], columns=TOW_TABLE_COLUMNS):
     """Tow table (one row per revolution) as CSV; NaN where not measured."""
-    lines = [",".join(TOW_TABLE_COLUMNS)]
+    lines = [",".join(columns)]
     for row in rows:
-        lines.append(",".join(str(row[c]) for c in TOW_TABLE_COLUMNS))
+        lines.append(",".join(str(row[c]) for c in columns))
     text = "\n".join(lines) + "\n"
     (Path(folder) / TOW_TABLE_FILE).write_text(text, encoding="utf-8")
 
@@ -296,6 +296,69 @@ def read_tow_table(folder) -> list[dict]:
         }
         for line in lines[1:]
     ]
+
+
+EXPORT_FOLDER = "export"
+EXPORT_TABLE_COLUMNS = (*TOW_TABLE_COLUMNS, "timestamp_s")
+EXPORT_META_FILE = "export.json"
+
+
+@dataclass
+class FlatRevolution:
+    """Flattened image of one revolution in the export package (millimetre grid)."""
+
+    fibre_deg: np.ndarray  # (rows = arc length, columns = axial position), NaN invalid
+    tow: np.ndarray  # bool, measured tow of the revolution
+    origin: tuple[float, float]  # (axial, arc) of cell (0, 0), mm
+    spacing: float  # mm per cell
+    r_ref: float  # mm, radius the arc length refers to
+
+
+def flat_file(k: int) -> str:
+    return f"rev{k:03d}_flat.npz"
+
+
+def overlay_file(k: int) -> str:
+    return f"rev{k:03d}_overlay.png"
+
+
+def write_export(folder, rows, meta, flats, overlays):
+    """Export package: tow table (with timestamps), metadata, and per revolution
+    the flattened arrays and the overlay image (RGB uint8)."""
+    import matplotlib.image as mpimg
+
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    write_tow_table(folder, rows, EXPORT_TABLE_COLUMNS)
+    (folder / EXPORT_META_FILE).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    for k, flat in flats.items():
+        np.savez_compressed(
+            folder / flat_file(k),
+            fibre_deg=flat.fibre_deg.astype(np.float32),
+            tow=flat.tow.astype(bool),
+            origin=np.asarray(flat.origin, dtype=float),
+            spacing=flat.spacing,
+            r_ref=flat.r_ref,
+        )
+    for k, image in overlays.items():
+        mpimg.imsave(folder / overlay_file(k), image)
+
+
+def read_export(folder) -> tuple[list[dict], dict]:
+    """Tow table rows and metadata of an export package."""
+    meta = json.loads((Path(folder) / EXPORT_META_FILE).read_text(encoding="utf-8"))
+    return read_tow_table(folder), meta
+
+
+def read_flat(folder, k: int) -> FlatRevolution:
+    with np.load(Path(folder) / flat_file(k)) as data:
+        return FlatRevolution(
+            fibre_deg=data["fibre_deg"],
+            tow=data["tow"],
+            origin=tuple(data["origin"].tolist()),
+            spacing=float(data["spacing"]),
+            r_ref=float(data["r_ref"]),
+        )
 
 
 PATH_HEADER = "Point number,X-coordinate (mm),Y-coordinate (mm),Z-coordinate (mm)"

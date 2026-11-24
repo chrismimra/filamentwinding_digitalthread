@@ -4,6 +4,7 @@ truth.json gives per revolution the crossing point, whether it is visible,
 the lateral offset d_k and the angle error delta_k of the as-laid tow.
 """
 
+import dataclasses
 import json
 
 import numpy as np
@@ -144,3 +145,20 @@ def test_a_revolution_that_never_reaches_the_camera_plane_has_no_crossing(
     )
     found = tow_matching.crossing(partial, 1, cal, geo, run.processing)
     assert not found.visible and np.isnan(found.point).all()
+
+
+def test_a_missed_revolution_leaves_a_gap_in_the_table(cylinder_geometry):
+    # Frame log without rev001 (missed pin pulse): revolution 2 is still
+    # numbered 2 and measured against the previous frame in the log.
+    run, cal, geo = cylinder_geometry
+    gap = dataclasses.replace(run, frames=[f for f in run.frames if f.name != "rev001"])
+    planned = geometry.planned_path(
+        cal, dataset.read_path(run.folder / run.tow_file), run.tow_width_mm
+    )
+    fibre = {f.name: fibre_map(run, cal, geo, f.name) for f in gap.frames}
+    rows = tow_matching.tow_table(gap, cal, geo, planned, fibre)
+    assert [r["revolution"] for r in rows] == [0, 2]
+    truth = json.loads((run.folder / "truth.json").read_text(encoding="utf-8"))
+    r2 = truth["revolutions"][2]
+    assert rows[1]["delta_position_mm"] == pytest.approx(r2["offset_mm"], abs=1.0)
+    assert rows[1]["delta_angle_deg"] == pytest.approx(r2["angle_error_deg"], abs=1.0)

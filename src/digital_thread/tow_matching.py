@@ -122,11 +122,17 @@ def match_revolution(tow_cells, cross, cal, geo):
 def tow_table(run, cal, geo, planned, fibre_maps):
     """One row per revolution: crossing point, planned angle and the measured
     Delta position / Delta angle (NaN if not visible or no tow found).
-    fibre_maps: fibre angle per pixel for each frame name of the run."""
+    fibre_maps: fibre angle per pixel for each frame name of the run.
+
+    The frame log starts with the reference frame; the revolution index comes
+    from each frame's name (set from the timestamps in Data capturing), so a
+    missed revolution leaves a gap instead of shifting the numbering. The
+    measured tow is the change from the previous frame in the log."""
     rows = []
-    revolutions = [f.name for f in run.frames if f.name != "reference"]
-    for k, name in enumerate(revolutions):
-        before = "reference" if k == 0 else revolutions[k - 1]
+    names = [f.name for f in run.frames]
+    for i in range(1, len(names)):
+        name, before = names[i], names[i - 1]
+        k = int(name.removeprefix("rev"))
         cross = crossing(planned, k, cal, geo, run.processing)
         delta_position = delta_angle = np.nan
         cells = 0

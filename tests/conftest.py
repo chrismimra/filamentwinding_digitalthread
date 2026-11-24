@@ -1,3 +1,8 @@
+import os
+
+# Tests run without a display; set before anything imports matplotlib.
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 from pathlib import Path
 
 import pytest
