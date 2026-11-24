@@ -1,9 +1,10 @@
 {
   "seed": 20261123,
   "conventions": {
-    "crossing_point": "planned path point of the revolution where it crosses the plane through the camera centre and the mandrel axis, on the camera side (STEP frame, mm)",
+    "crossing_point": "point of the revolution's planned path (for a coarse tow file: resampled at 1 mm on the mesh) where it crosses the plane through the camera centre and the mandrel axis, on the camera side (STEP frame, mm)",
     "offset_mm": "shift of the as-laid tow at the crossing point along n x t (n outward surface normal, t planned path direction of travel)",
-    "angle_error_deg": "as-laid minus planned fibre angle (rotation about the crossing point within the surface)"
+    "angle_error_deg": "as-laid minus planned fibre angle (rotation about the crossing point within the surface)",
+    "visible": "the crossing point lies inside the crop polygon within the incidence limit"
   },
   "revolutions": [
     {
@@ -14,7 +15,8 @@
         125.0,
         0.0,
         -120.0
-      ]
+      ],
+      "visible": true
     },
     {
       "revolution": 1,
@@ -24,7 +26,8 @@
         125.0,
         3.061616997868383e-14,
         0.0
-      ]
+      ],
+      "visible": true
     },
     {
       "revolution": 2,
@@ -34,7 +37,8 @@
         125.0,
         6.123233995736766e-14,
         120.0
-      ]
+      ],
+      "visible": true
     }
   ]
 }
