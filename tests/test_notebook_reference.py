@@ -6,11 +6,12 @@ a marker comment; the test runs that cell on its own and compares results.
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from digital_thread import conversion, forward_model, touch_down
+from digital_thread import conversion, dataset, forward_model, mapping, touch_down
 
 NOTEBOOK = Path(__file__).parents[1] / "notebooks" / "01_DigitalThreadNotebook.ipynb"
 
@@ -63,6 +64,40 @@ def test_conversion_matches_notebook():
     for name in ("s0", "dolp", "aolp"):
         np.testing.assert_array_equal(getattr(ours, name), getattr(theirs, name))
     assert nb["AOLP_SIGN"] == conversion.AOLP_SIGN
+
+
+def test_mapping_matches_notebook():
+    nb = notebook_cell("# Mapping")
+    rng = np.random.default_rng(5)
+    h, w = 30, 40
+    point = rng.uniform(-50, 50, (h, w, 3)) + [0, 0, 600]
+    normal = rng.normal(size=(h, w, 3)) + [0, 0, -3]
+    normal /= np.linalg.norm(normal, axis=-1, keepdims=True)
+    point[:3] = normal[:3] = np.nan  # outside the crop
+    geo = SimpleNamespace(
+        point=point.astype(np.float32), normal=normal.astype(np.float32)
+    )
+    maps = dataset.PolarisationMaps(
+        s0=np.full((h, w), 1000, np.float32),
+        dolp=rng.uniform(0, 0.4, (h, w)).astype(np.float32),
+        aolp=rng.uniform(-90, 90, (h, w)).astype(np.float32),
+    )
+    cal = SimpleNamespace(R=np.eye(3), t=np.zeros(3), axis_dir=np.array([0, 1.0, 0]))
+    processing = dataset.Processing(dolp_threshold=0.1, incidence_limit_deg=30.0)
+    for name in ("valid_pixels", "fibre_angles"):
+        args = (maps, geo, cal, processing)
+        np.testing.assert_array_equal(getattr(mapping, name)(*args), nb[name](*args))
+
+    for axis in ([0, 0, 1.0], [1.0, 0, 0], [0.3, -0.5, 0.8]):
+        args = (point.reshape(-1, 3), np.array([1.0, 2, 3]), np.array(axis), 80.0, 170)
+        for ours, theirs in zip(
+            mapping.flat_coordinates(*args), nb["flat_coordinates"](*args), strict=True
+        ):
+            np.testing.assert_array_equal(ours, theirs)
+    geo.flat_pixel = rng.integers(-1, h * w, (7, 9)).astype(np.int32)
+    np.testing.assert_array_equal(
+        mapping.flatten(maps.aolp, geo), nb["flatten"](maps.aolp, geo)
+    )
 
 
 def test_touch_down_model_matches_notebook():

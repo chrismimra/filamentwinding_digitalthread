@@ -8,6 +8,7 @@ dependencies = [
     "ipykernel",
     "numpy>=2.5.4",
     "matplotlib>=3.11.2",
+    "open3d>=0.20.0",  # ray casting for the run geometry (Mapping)
 ]
 
 [dependency-groups]
@@ -18,7 +19,6 @@ dev = [
 # Only for the git-ignored synthetic data generator (src/synthetic_data).
 generator = [
     "gmsh>=4.15.2",
-    "open3d>=0.20.0",
     "scipy>=1.18.1",
 ]
 

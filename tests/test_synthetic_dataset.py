@@ -218,3 +218,19 @@ def test_new_tow_shows_the_tow_dolp_in_its_frame(cylinder):
         i = {angle: raw[r::2, c::2][new_tow] for angle, (r, c) in slot.items()}
         dolp = np.hypot(i[0] - i[90], i[45] - i[135]) / (i[0] + i[90])
         assert dolp.mean() == pytest.approx(0.3, abs=0.02)
+
+
+def test_crop_polygon_encloses_the_three_crossings(cylinder):
+    from matplotlib.path import Path as Polygon
+
+    run, cal, _ = cylinder
+    assert cal.crop_polygon is not None and len(cal.crop_polygon) >= 3
+    crossings = np.array([r["crossing_point"] for r in truth(run)["revolutions"]])
+    u, v = project(crossings, cal)
+    assert Polygon(cal.crop_polygon).contains_points(np.column_stack([u, v])).all()
+
+
+def test_run_records_the_processing_settings(cylinder):
+    run, _, _ = cylinder
+    assert run.processing == dataset.Processing(0.1, 20.0)
+    assert '"processing"' in (run.folder / "run.json").read_text(encoding="utf-8")

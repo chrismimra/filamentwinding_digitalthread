@@ -33,6 +33,8 @@ class Calibration:
     mesh_vertices: np.ndarray  # (n, 3) mm, STEP frame
     mesh_faces: np.ndarray  # (m, 3) vertex indices
     mesh_normals: np.ndarray  # (n, 3) outward unit normals per vertex
+    # (n, 2) vertices (u, v) in super-pixels of the full image; None = full image
+    crop_polygon: np.ndarray | None = None
 
 
 _MESH_FIELDS = ("mesh_vertices", "mesh_faces", "mesh_normals")
@@ -52,6 +54,8 @@ def write_calibration(folder, cal: Calibration):
         "pin_phase_deg": float(cal.pin_phase_deg),
         "touch_down_deg": float(cal.touch_down_deg),
     }
+    if cal.crop_polygon is not None:
+        meta["crop_polygon"] = np.asarray(cal.crop_polygon, dtype=float).tolist()
     (folder / "calibration.json").write_text(
         json.dumps(meta, indent=2), encoding="utf-8"
     )
@@ -80,6 +84,9 @@ def read_calibration(folder) -> Calibration:
             mesh_vertices=mesh["vertices"],
             mesh_faces=mesh["faces"],
             mesh_normals=mesh["normals"],
+            crop_polygon=(
+                np.array(meta["crop_polygon"]) if "crop_polygon" in meta else None
+            ),
         )
 
 
@@ -96,6 +103,14 @@ class Frame:
 
 
 @dataclass
+class Processing:
+    """Processing settings of a run (Mapping: valid pixels)."""
+
+    dolp_threshold: float = 0.1
+    incidence_limit_deg: float = 20.0
+
+
+@dataclass
 class Run:
     run_id: str
     calibration: str  # calibration bundle folder, relative to the run folder
@@ -106,6 +121,7 @@ class Run:
     ]  # (top-left, top-right, bottom-left, bottom-right)
     camera_settings: dict
     nominal_period_s: float
+    processing: Processing = field(default_factory=Processing)
     frames: list[Frame] = field(default_factory=list)
     folder: Path | None = None  # set when read
 
@@ -128,6 +144,7 @@ def read_run(folder) -> Run:
     meta = json.loads((folder / "run.json").read_text(encoding="utf-8"))
     meta["frames"] = [Frame(**f) for f in meta["frames"]]
     meta["polar_pattern"] = tuple(meta["polar_pattern"])
+    meta["processing"] = Processing(**meta.get("processing", {}))
     return Run(**meta, folder=folder)
 
 
@@ -173,6 +190,69 @@ def read_polarisation(folder, name: str) -> PolarisationMaps:
     """Read the polarisation maps of frame `name` from `folder`."""
     with np.load(Path(folder) / polarisation_file(name)) as data:
         return PolarisationMaps(data["s0"], data["dolp"], data["aolp"])
+
+
+@dataclass
+class RunGeometry:
+    """Per super-pixel 3D point (mm, STEP frame) and outward unit normal, float32,
+    NaN outside the crop polygon and where the ray misses the mandrel."""
+
+    point: np.ndarray  # (h, w, 3)
+    normal: np.ndarray  # (h, w, 3)
+    # Flattening lookup: per grid cell (rows = arc length, columns = axial
+    # position) the flat index of the super-pixel that sees it, -1 if none.
+    flat_pixel: np.ndarray
+    flat_origin: tuple[float, float]  # (axial, arc) of cell (0, 0), mm
+    flat_spacing: float  # mm per grid cell
+    r_ref: float  # mm, radius at the view centre
+    phi_centre_deg: float  # body angle of the view centre
+
+
+GEOMETRY_FILE = "geometry.npz"
+
+
+def write_geometry(folder, geo: RunGeometry):
+    """Write the run geometry into `folder` (the run folder in production)."""
+    np.savez_compressed(
+        Path(folder) / GEOMETRY_FILE,
+        point=geo.point.astype(np.float32),
+        normal=geo.normal.astype(np.float32),
+        flat_pixel=geo.flat_pixel.astype(np.int32),
+        flat_origin=np.asarray(geo.flat_origin, dtype=float),
+        flat_spacing=geo.flat_spacing,
+        r_ref=geo.r_ref,
+        phi_centre_deg=geo.phi_centre_deg,
+    )
+
+
+def read_geometry(folder) -> RunGeometry:
+    with np.load(Path(folder) / GEOMETRY_FILE) as data:
+        return RunGeometry(
+            point=data["point"],
+            normal=data["normal"],
+            flat_pixel=data["flat_pixel"],
+            flat_origin=tuple(data["flat_origin"].tolist()),
+            flat_spacing=float(data["flat_spacing"]),
+            r_ref=float(data["r_ref"]),
+            phi_centre_deg=float(data["phi_centre_deg"]),
+        )
+
+
+def fibre_file(name: str) -> str:
+    """Fibre angle file name: `rev000_fibre.npz`, ..."""
+    return f"{name}_fibre.npz"
+
+
+def write_fibre(folder, name: str, fibre_deg: np.ndarray):
+    """Fibre angle per super-pixel (deg, NaN where invalid) of frame `name`."""
+    np.savez_compressed(
+        Path(folder) / fibre_file(name), fibre_deg=fibre_deg.astype(np.float32)
+    )
+
+
+def read_fibre(folder, name: str) -> np.ndarray:
+    with np.load(Path(folder) / fibre_file(name)) as data:
+        return data["fibre_deg"]
 
 
 PATH_HEADER = "Point number,X-coordinate (mm),Y-coordinate (mm),Z-coordinate (mm)"

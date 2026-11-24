@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import numpy as np
@@ -31,3 +32,34 @@ def test_polarisation_maps_round_trip(tmp_path):
     for name, expected in (("s0", s0), ("dolp", dolp), ("aolp", aolp)):
         np.testing.assert_array_equal(getattr(back, name), expected)
         assert getattr(back, name).dtype == np.float32
+
+
+SYNTHETIC_RUN = DEMO / "synthetic" / "cylinder" / "run"
+
+
+def test_run_without_processing_settings_loads_the_defaults(tmp_path):
+    meta = json.loads((SYNTHETIC_RUN / "run.json").read_text(encoding="utf-8"))
+    meta.pop("processing", None)
+    (tmp_path / "run.json").write_text(json.dumps(meta), encoding="utf-8")
+    old = dataset.read_run(tmp_path)
+    assert old.processing.dolp_threshold == 0.1
+    assert old.processing.incidence_limit_deg == 20.0
+
+
+def test_processing_settings_round_trip(tmp_path):
+    run = dataset.read_run(SYNTHETIC_RUN)
+    run.processing = dataset.Processing(dolp_threshold=0.15, incidence_limit_deg=25.0)
+    dataset.write_run(tmp_path, run)
+    assert dataset.read_run(tmp_path).processing == run.processing
+
+
+def test_crop_polygon_round_trip_and_default(tmp_path):
+    cal = dataset.read_calibration(SYNTHETIC_RUN.parent / "calibration")
+    cal.crop_polygon = np.array([[10.0, 20.0], [500.0, 20.0], [300.0, 400.0]])
+    dataset.write_calibration(tmp_path / "a", cal)
+    back = dataset.read_calibration(tmp_path / "a")
+    np.testing.assert_array_equal(back.crop_polygon, cal.crop_polygon)
+
+    cal.crop_polygon = None
+    dataset.write_calibration(tmp_path / "b", cal)
+    assert dataset.read_calibration(tmp_path / "b").crop_polygon is None
