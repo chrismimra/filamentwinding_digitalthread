@@ -14,11 +14,9 @@ from digital_thread import dataset, process, viewer
 
 
 @pytest.fixture(scope="module", params=["cylinder", "banana"])
-def processed(request, tmp_path_factory):
-    run, cal, geo = request.getfixturevalue(f"{request.param}_geometry")
-    out = tmp_path_factory.mktemp(request.param)
-    dataset.write_geometry(out, geo)
-    export = process.process_run(run.folder, out)
+def processed(request):
+    run, cal, _ = request.getfixturevalue(f"{request.param}_geometry")
+    out, export = request.getfixturevalue("processed_committed")(request.param)
     truth = json.loads((run.folder / "truth.json").read_text(encoding="utf-8"))
     return run, cal, out, export, truth["revolutions"]
 

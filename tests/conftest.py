@@ -28,3 +28,21 @@ def cylinder_geometry():
 def banana_geometry():
     """Run, calibration and run geometry of the synthetic banana (computed once)."""
     return _load_with_geometry("banana")
+
+
+@pytest.fixture(scope="session")
+def processed_committed(tmp_path_factory, request):
+    """Process a committed synthetic run once per session: name -> (out, export)."""
+    from digital_thread import process
+
+    cache = {}
+
+    def get(name):
+        if name not in cache:
+            run, _, geo = request.getfixturevalue(f"{name}_geometry")
+            out = tmp_path_factory.mktemp(f"processed_{name}")
+            dataset.write_geometry(out, geo)
+            cache[name] = out, process.process_run(run.folder, out)
+        return cache[name]
+
+    return get

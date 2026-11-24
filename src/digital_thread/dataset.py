@@ -123,6 +123,10 @@ class Run:
     nominal_period_s: float
     processing: Processing = field(default_factory=Processing)
     frames: list[Frame] = field(default_factory=list)
+    # Frame log flags of a recording (slice 3): revolution indices without a
+    # frame, and timestamps of frames dropped as pin bounces.
+    missed_revolutions: list[int] = field(default_factory=list)
+    dropped_bounces_s: list[float] = field(default_factory=list)
     folder: Path | None = None  # set when read
 
     @property
@@ -136,7 +140,10 @@ def write_run(folder, run: Run):
     meta = asdict(run)
     meta.pop("folder")
     meta["polar_pattern"] = list(run.polar_pattern)
-    (folder / "run.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    # Written to a temporary file first, so a crash never leaves half a run.json.
+    tmp = folder / "run.json.tmp"
+    tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    tmp.replace(folder / "run.json")
 
 
 def read_run(folder) -> Run:
