@@ -6,7 +6,7 @@ Frames passed in any other state are ignored (e.g. while previewing).
 
 Revolution index k = round((t - t0) / T), with t0 the first frame after
 `start()` and T the nominal period. A frame less than T/2 after the previous
-kept frame is a pin bounce and is dropped; skipped indices are logged as
+kept frame (or with an index already logged) is a pin bounce and is dropped; skipped indices are logged as
 missed. Timestamps in the frame log are seconds from the reference frame.
 Raw pixels outside the crop polygon are set to 0 before saving.
 """
@@ -54,11 +54,19 @@ class Recorder:
             nominal_period_s=settings.nominal_period_s,
             processing=settings.processing,
         )
+        self._reset()
+
+    def _reset(self):
+        self.run.frames = []
+        self.run.missed_revolutions = []
+        self.run.dropped_bounces_s = []
         self._t_ref = self._t0 = self._t_last = None
         self._k_last = -1
 
     def capture_reference(self):
-        """The next frame becomes the reference (empty mandrel)."""
+        """The next frame becomes the reference (empty mandrel); a new reference
+        starts the frame log again."""
+        self._reset()
         self.state = "reference"
 
     def start(self):
@@ -81,7 +89,6 @@ class Recorder:
             if self.settings.tow_file:
                 shutil.copyfile(self.settings.tow_file, self.folder / self.run.tow_file)
             self._t_ref = timestamp_s
-            self.run.frames = []
             self._save("reference", raw, 0.0)
             self.state = "ready"
             return "reference"
@@ -91,11 +98,13 @@ class Recorder:
         period = self.settings.nominal_period_s
         if self._t0 is None:
             self._t0 = t
-        elif t - self._t_last < period / 2:
+        k = round((t - self._t0) / period)
+        if self._t_last is not None and (
+            t - self._t_last < period / 2 or k <= self._k_last
+        ):
             self.run.dropped_bounces_s.append(round(t, 6))
             dataset.write_run(self.folder, self.run)
             return None
-        k = round((t - self._t0) / period)
         self.run.missed_revolutions += list(range(self._k_last + 1, k))
         self._k_last, self._t_last = k, t
         name = f"rev{k:03d}"

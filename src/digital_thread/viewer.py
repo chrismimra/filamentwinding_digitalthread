@@ -19,7 +19,8 @@ from digital_thread import dataset, geometry
 
 
 class TowViewer:
-    def __init__(self, run_folder, out_folder=None):
+    def __init__(self, run_folder, out_folder=None, fig=None):
+        """`fig`: an existing matplotlib figure to draw into (e.g. in a Qt canvas)."""
         self.run = dataset.read_run(run_folder)
         self.cal = dataset.read_calibration(self.run.calibration_folder)
         out = Path(out_folder) if out_folder is not None else self.run.folder
@@ -28,7 +29,7 @@ class TowViewer:
         self.rows, _ = dataset.read_export(self.export)
         self.text = ""
 
-        self.fig = plt.figure(figsize=(14, 8))
+        self.fig = fig if fig is not None else plt.figure(figsize=(14, 8))
         self.ax_overlay = self.fig.add_axes((0.18, 0.55, 0.8, 0.4))
         self.ax_camera = self.fig.add_axes((0.18, 0.03, 0.45, 0.42))
         self.ax_text = self.fig.add_axes((0.66, 0.05, 0.32, 0.45))

@@ -48,7 +48,7 @@ class ReplayCamera:
         self.trigger = "hardware"
         self._next = 0
         self._offset = 0.0  # added to timestamps after each loop
-        self._last = None
+        self._last = None  # (timestamp, monotonic time) of the last served frame
 
     def settings(self):
         return dict(self._settings)
@@ -71,11 +71,118 @@ class ReplayCamera:
             )
             self._next = 0
         name, stamp = self.events[self._next]
-        self._next += 1
+        stamp += self._offset
         if self.speed and self._last is not None:
-            time.sleep(max(0.0, (stamp - self._last) / self.speed))
-        self._last = stamp
-        return dataset.read_frame(self.run, name), stamp + self._offset
+            due = self._last[1] + (stamp - self._last[0]) / self.speed
+            wait = due - time.monotonic()
+            if wait > timeout_s:  # like a camera: no pulse within the timeout
+                time.sleep(timeout_s)
+                return None
+            time.sleep(max(0.0, wait))
+        self._next += 1
+        self._last = (stamp, time.monotonic())
+        return dataset.read_frame(self.run, name), stamp
 
     def close(self):
         pass
+
+
+# Polariser pattern of the Sony IMX250MZR sensor in the acA4112-30umPOL:
+# (top-left, top-right, bottom-left, bottom-right) in degrees.
+BASLER_POLAR_PATTERN = (90, 45, 135, 0)
+TIMESTAMP_TICK_S = 1e-9  # ace USB 3.0 chunk timestamp tick
+
+
+class BaslerCamera:
+    """Basler acA4112-30umPOL via pypylon (Mono12, chunk timestamps).
+
+    Trigger modes: "free" (continuous, latest image only: Preview), "hardware"
+    (Line 1, rising edge: one frame per pin pulse), "software" (tests).
+    """
+
+    def __init__(self, serial=None):
+        from pypylon import pylon
+
+        self._pylon = pylon
+        factory = pylon.TlFactory.GetInstance()
+        devices = [
+            d
+            for d in factory.EnumerateDevices()
+            if serial is None or d.GetSerialNumber() == serial
+        ]
+        if not devices:
+            raise RuntimeError("no Basler camera found")
+        self.cam = pylon.InstantCamera(factory.CreateDevice(devices[0]))
+        self.cam.Open()
+        try:
+            self.cam.PixelFormat.Value = "Mono12"
+            self.cam.ChunkModeActive.Value = True
+            self.cam.ChunkSelector.Value = "Timestamp"
+            self.cam.ChunkEnable.Value = True
+            self.polar_pattern = BASLER_POLAR_PATTERN
+            self.trigger = None
+            self.set_trigger("free")
+        except Exception:
+            self.cam.Close()
+            raise
+
+    @staticmethod
+    def available():
+        try:
+            from pypylon import pylon
+        except ImportError:
+            return False
+        return len(pylon.TlFactory.GetInstance().EnumerateDevices()) > 0
+
+    def settings(self):
+        return {
+            "exposure_us": float(self.cam.ExposureTime.Value),
+            "gain_db": float(self.cam.Gain.Value),
+        }
+
+    def set_exposure_us(self, value):
+        self.cam.ExposureTime.Value = float(value)
+
+    def set_gain_db(self, value):
+        self.cam.Gain.Value = float(value)
+
+    def set_trigger(self, mode):
+        if mode not in ("free", "hardware", "software"):
+            raise ValueError(mode)
+        self.cam.StopGrabbing()
+        self.cam.TriggerSelector.Value = "FrameStart"
+        if mode == "free":
+            self.cam.TriggerMode.Value = "Off"
+            strategy = self._pylon.GrabStrategy_LatestImageOnly
+        else:
+            self.cam.TriggerMode.Value = "On"
+            self.cam.TriggerSource.Value = "Line1" if mode == "hardware" else "Software"
+            if mode == "hardware":
+                self.cam.TriggerActivation.Value = "RisingEdge"
+            strategy = self._pylon.GrabStrategy_OneByOne
+        self.cam.StartGrabbing(strategy)
+        self.trigger = mode
+
+    def software_trigger(self):
+        self.cam.WaitForFrameTriggerReady(
+            1000, self._pylon.TimeoutHandling_ThrowException
+        )
+        self.cam.ExecuteSoftwareTrigger()
+
+    def grab(self, timeout_s=1.0):
+        result = self.cam.RetrieveResult(
+            int(timeout_s * 1000), self._pylon.TimeoutHandling_Return
+        )
+        if not result.IsValid():  # timeout
+            return None
+        try:
+            if not result.GrabSucceeded():
+                return None
+            raw = np.array(result.Array, dtype=np.uint16)
+            return raw, result.ChunkTimestamp.Value * TIMESTAMP_TICK_S
+        finally:
+            result.Release()
+
+    def close(self):
+        self.cam.StopGrabbing()
+        self.cam.Close()

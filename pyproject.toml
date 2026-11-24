@@ -10,17 +10,16 @@ dependencies = [
     "matplotlib>=3.11.2",
     "open3d>=0.20.0",  # ray casting for the run geometry (Mapping)
     "scipy>=1.18.1",  # connected regions of the measured tow (Tow matching)
-    "opencv-python>=4.10",
+    "opencv-python>=4.10",  # calibration (slice 2)
+    "gmsh>=4.15.2",  # STEP import of the mandrel (slice 2)
+    "pyside6>=6.8",
+    "pypylon>=4.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=9.2.0",
     "ruff>=0.17.3",
-]
-# Only for the git-ignored synthetic data generator (src/synthetic_data).
-generator = [
-    "gmsh>=4.15.2",
 ]
 
 [build-system]
@@ -36,3 +35,4 @@ extend-exclude = ["notebooks"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["camera: needs a connected Basler camera (skipped otherwise)"]

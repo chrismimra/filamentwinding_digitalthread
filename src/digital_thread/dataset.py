@@ -13,6 +13,7 @@ mandrel turns counter-clockwise about it.
 """
 
 import json
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -35,9 +36,14 @@ class Calibration:
     mesh_normals: np.ndarray  # (n, 3) outward unit normals per vertex
     # (n, 2) vertices (u, v) in super-pixels of the full image; None = full image
     crop_polygon: np.ndarray | None = None
+    # Calibration record (slice 2): marker size and reprojection errors.
+    marker_size_mm: float | None = None
+    intrinsic_rms_px: float | None = None
+    position_rms_px: float | None = None
 
 
 _MESH_FIELDS = ("mesh_vertices", "mesh_faces", "mesh_normals")
+_RECORD_FIELDS = ("marker_size_mm", "intrinsic_rms_px", "position_rms_px")
 
 
 def write_calibration(folder, cal: Calibration):
@@ -56,6 +62,9 @@ def write_calibration(folder, cal: Calibration):
     }
     if cal.crop_polygon is not None:
         meta["crop_polygon"] = np.asarray(cal.crop_polygon, dtype=float).tolist()
+    for key in _RECORD_FIELDS:
+        if getattr(cal, key) is not None:
+            meta[key] = float(getattr(cal, key))
     (folder / "calibration.json").write_text(
         json.dumps(meta, indent=2), encoding="utf-8"
     )
@@ -87,6 +96,7 @@ def read_calibration(folder) -> Calibration:
             crop_polygon=(
                 np.array(meta["crop_polygon"]) if "crop_polygon" in meta else None
             ),
+            **{key: meta.get(key) for key in _RECORD_FIELDS},
         )
 
 
@@ -134,6 +144,9 @@ class Run:
         return (self.folder / self.calibration).resolve()
 
 
+REPLACE_ATTEMPTS = 20
+
+
 def write_run(folder, run: Run):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -143,7 +156,14 @@ def write_run(folder, run: Run):
     # Written to a temporary file first, so a crash never leaves half a run.json.
     tmp = folder / "run.json.tmp"
     tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    tmp.replace(folder / "run.json")
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            tmp.replace(folder / "run.json")
+            return
+        except PermissionError:  # briefly held by a sync client or virus scanner
+            if attempt == REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(0.1)
 
 
 def read_run(folder) -> Run:
@@ -386,3 +406,35 @@ def write_path(file, points: np.ndarray):
         comments="",
         fmt=["%d"] + ["%.9f"] * 3,
     )
+
+
+MARKER_TABLE_FILE = "markers.csv"  # copy of the marker table in a calibration bundle
+
+
+def read_markers(file) -> tuple[np.ndarray, np.ndarray]:
+    """Marker table (tow-file format, point number = marker ID) -> IDs, centres (n, 3).
+
+    Empty rows (e.g. ",,," left by a spreadsheet) are skipped.
+    """
+    table = np.genfromtxt(file, delimiter=",", skip_header=1, ndmin=2)
+    table = table[~np.isnan(table[:, :4]).any(axis=1)]
+    return table[:, 0].astype(int), table[:, 1:4]
+
+
+def write_image(file, image: np.ndarray):
+    """8-bit grey image as PNG (works with any path, unlike cv2.imwrite)."""
+    import cv2
+
+    ok, png = cv2.imencode(".png", np.asarray(image, dtype=np.uint8))
+    if not ok:
+        raise ValueError(f"cannot encode {file}")
+    Path(file).write_bytes(png.tobytes())
+
+
+def read_image(file) -> np.ndarray:
+    import cv2
+
+    image = cv2.imdecode(np.fromfile(file, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        raise ValueError(f"not an image: {file}")
+    return image

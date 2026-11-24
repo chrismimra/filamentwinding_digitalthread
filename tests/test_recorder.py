@@ -101,3 +101,32 @@ def test_recorded_run_processes_like_the_committed_run(
                 np.testing.assert_allclose(b[key], value, atol=1e-9)
             else:
                 assert b[key] == value
+
+
+def test_frame_with_an_index_already_logged_is_dropped(cylinder_geometry, tmp_path):
+    run, cal, _ = cylinder_geometry
+    events = [("reference", 0.0), ("rev000", 12.0), ("rev001", 19.2), ("rev002", 25.7)]
+    _record(ReplayCamera(run.folder, events), tmp_path, run, cal)
+    rec_run = dataset.read_run(tmp_path)
+    # 19.2 s rounds to revolution 1; 25.7 s also rounds to 1 although it is
+    # more than half a period later, so it is dropped rather than overwriting.
+    assert [f.name for f in rec_run.frames] == ["reference", "rev000", "rev001"]
+    assert rec_run.dropped_bounces_s == pytest.approx([25.7])
+
+
+def test_new_reference_restarts_the_frame_log(cylinder_geometry, tmp_path):
+    run, cal, _ = cylinder_geometry
+    camera = ReplayCamera(run.folder)
+    rec = _record(camera, tmp_path, run, cal)
+    events = [("reference", 100.0), ("rev000", 112.0)]
+    camera = ReplayCamera(run.folder, events)
+    rec.capture_reference()
+    rec.on_frame(*camera.grab())
+    rec.start()
+    rec.on_frame(*camera.grab())
+    rec_run = dataset.read_run(tmp_path)
+    assert [(f.name, f.timestamp_s) for f in rec_run.frames] == [
+        ("reference", 0.0),
+        ("rev000", 12.0),
+    ]
+    assert rec_run.missed_revolutions == [] and rec_run.dropped_bounces_s == []

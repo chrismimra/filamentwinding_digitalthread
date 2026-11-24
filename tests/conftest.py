@@ -2,6 +2,7 @@ import os
 
 # Tests run without a display; set before anything imports matplotlib.
 os.environ.setdefault("MPLBACKEND", "Agg")
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")  # Qt without a window
 
 from pathlib import Path
 
