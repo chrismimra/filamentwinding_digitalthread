@@ -9,6 +9,7 @@ dependencies = [
     "numpy>=2.5.4",
     "matplotlib>=3.11.2",
     "open3d>=0.20.0",  # ray casting for the run geometry (Mapping)
+    "scipy>=1.18.1",  # connected regions of the measured tow (Tow matching)
 ]
 
 [dependency-groups]
@@ -19,7 +20,6 @@ dev = [
 # Only for the git-ignored synthetic data generator (src/synthetic_data).
 generator = [
     "gmsh>=4.15.2",
-    "scipy>=1.18.1",
 ]
 
 [build-system]

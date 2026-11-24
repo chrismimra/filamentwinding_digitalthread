@@ -5,18 +5,32 @@ pixel ray (intrinsics, distortion inverted, so only pixel positions change),
 the nearest hit on the mandrel mesh and the normal interpolated from the CAD
 vertex normals. NaN outside the crop polygon and where the ray misses.
 It also holds the flattening lookup: which super-pixel shows each cell of
-the flattened image.
+the flattened image, and the planned path resampled on the mesh (Tow matching).
 """
+
+from dataclasses import dataclass
 
 import numpy as np
 import open3d as o3d
 from matplotlib.path import Path as Polygon
 
+from digital_thread import touch_down
 from digital_thread.dataset import Calibration, RunGeometry
 from digital_thread.mapping import axis_frame, flat_coordinates
 
 FLAT_SPACING_MM = 0.1
 HIDDEN_TOLERANCE_MM = 1.0  # a hidden surface point lies far further from the seen one
+PATH_STEP_MM = 1.0
+
+
+@dataclass
+class PlannedPath:
+    """Planned path resampled on the mesh, with outward normals and the revolution
+    of each point by the touch-down model."""
+
+    point: np.ndarray  # (n, 3) mm
+    normal: np.ndarray  # (n, 3)
+    revolution: np.ndarray  # (n,) int
 
 
 def camera_centre(cal: Calibration) -> np.ndarray:
@@ -105,6 +119,64 @@ def cast(cal: Calibration, origins, directions, scene=None):
     points[hit] = origins[hit] + dist[:, None] * d
     normals[hit] = normal / np.linalg.norm(normal, axis=1, keepdims=True)
     return points, normals
+
+
+def closest_on_mesh(cal: Calibration, points, scene=None):
+    """Closest mesh point and interpolated unit normal for each query point.
+
+    Open3D (float32) finds the triangle; the point is projected onto that
+    triangle's plane in float64.
+    """
+    scene = scene or _scene(cal)
+    points = np.asarray(points, dtype=float)
+    query = o3d.core.Tensor(points.astype(np.float32))
+    ids = scene.compute_closest_points(query)["primitive_ids"].numpy().astype(np.int64)
+    tri = cal.mesh_faces[ids]
+    v = cal.mesh_vertices
+    v0, e1, e2 = v[tri[:, 0]], v[tri[:, 1]] - v[tri[:, 0]], v[tri[:, 2]] - v[tri[:, 0]]
+    plane_n = np.cross(e1, e2)
+    plane_n /= np.linalg.norm(plane_n, axis=1, keepdims=True)
+    projected = points - np.einsum("ij,ij->i", points - v0, plane_n)[:, None] * plane_n
+    w = projected - v0
+    d11, d12, d22 = (
+        np.einsum("ij,ij->i", a, b) for a, b in ((e1, e1), (e1, e2), (e2, e2))
+    )
+    w1, w2 = np.einsum("ij,ij->i", w, e1), np.einsum("ij,ij->i", w, e2)
+    det = d11 * d22 - d12 * d12
+    b1, b2 = (d22 * w1 - d12 * w2) / det, (d11 * w2 - d12 * w1) / det
+    n = cal.mesh_normals
+    normal = (
+        (1 - b1 - b2)[:, None] * n[tri[:, 0]]
+        + b1[:, None] * n[tri[:, 1]]
+        + b2[:, None] * n[tri[:, 2]]
+    )
+    return projected, normal / np.linalg.norm(normal, axis=1, keepdims=True)
+
+
+def planned_path(
+    cal: Calibration, tow_file_points, tow_width_mm: float, step_mm=PATH_STEP_MM
+) -> PlannedPath:
+    """Tow placement file -> planned path on the mesh.
+
+    Points further than one tow width from the mesh (lead-in/out) are dropped;
+    the rest is resampled every `step_mm` along the polyline and projected onto
+    the mesh, so a coarse file does not cut below the surface. Revolutions by
+    the touch-down model.
+    """
+    scene = _scene(cal)
+    raw = np.asarray(tow_file_points, dtype=float)
+    on_mesh, _ = closest_on_mesh(cal, raw, scene)
+    raw = raw[np.linalg.norm(on_mesh - raw, axis=1) <= tow_width_mm]
+    length = np.concatenate(
+        [[0], np.cumsum(np.linalg.norm(np.diff(raw, axis=0), axis=1))]
+    )
+    s = np.arange(0.0, length[-1], step_mm)
+    dense = np.column_stack([np.interp(s, length, raw[:, i]) for i in range(3)])
+    point, normal = closest_on_mesh(cal, dense, scene)
+    revolution = touch_down.revolution_index(
+        point, cal.axis_point, cal.axis_dir, cal.touch_down_deg, cal.pin_phase_deg
+    )
+    return PlannedPath(point, normal, revolution)
 
 
 def _view_centre(point):

@@ -349,6 +349,7 @@ dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "open3d" },
+    { name = "scipy" },
 ]
 
 [package.dev-dependencies]
@@ -358,7 +359,6 @@ dev = [
 ]
 generator = [
     { name = "gmsh" },
-    { name = "scipy" },
 ]
 
 [package.metadata]
@@ -368,6 +368,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.11.2" },
     { name = "numpy", specifier = ">=2.5.4" },
     { name = "open3d", specifier = ">=0.20.0" },
+    { name = "scipy", specifier = ">=1.18.1" },
 ]
 
 [package.metadata.requires-dev]
@@ -375,10 +376,7 @@ dev = [
     { name = "pytest", specifier = ">=9.2.0" },
     { name = "ruff", specifier = ">=0.17.3" },
 ]
-generator = [
-    { name = "gmsh", specifier = ">=4.15.2" },
-    { name = "scipy", specifier = ">=1.18.1" },
-]
+generator = [{ name = "gmsh", specifier = ">=4.15.2" }]
 
 [[package]]
 name = "executing"

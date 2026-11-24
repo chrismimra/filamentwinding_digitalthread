@@ -11,7 +11,15 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from digital_thread import conversion, dataset, forward_model, mapping, touch_down
+from digital_thread import (
+    conversion,
+    dataset,
+    forward_model,
+    geometry,
+    mapping,
+    touch_down,
+    tow_matching,
+)
 
 NOTEBOOK = Path(__file__).parents[1] / "notebooks" / "01_DigitalThreadNotebook.ipynb"
 
@@ -113,4 +121,28 @@ def test_touch_down_model_matches_notebook():
     )
     np.testing.assert_allclose(
         touch_down.mandrel_angle(*args), nb["mandrel_angle"](*args)
+    )
+
+
+def test_tow_matching_matches_notebook(cylinder_geometry):
+    nb = notebook_cell("# Tow matching")
+    run, cal, geo = cylinder_geometry
+    planned = geometry.planned_path(
+        cal, dataset.read_path(run.folder / run.tow_file), run.tow_width_mm
+    )
+    fibre = {
+        f.name: mapping.fibre_angles(
+            conversion.convert(dataset.read_frame(run, f.name), run.polar_pattern),
+            geo,
+            cal,
+            run.processing,
+        )
+        for f in run.frames
+    }
+    ours = tow_matching.tow_table(run, cal, geo, planned, fibre)
+    theirs = nb["tow_table"](run, cal, geo, planned, fibre)
+    assert ours == theirs
+    np.testing.assert_array_equal(
+        tow_matching.measured_tow(fibre["rev001"], fibre["rev002"], geo),
+        nb["measured_tow"](fibre["rev001"], fibre["rev002"], geo),
     )

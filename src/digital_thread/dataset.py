@@ -255,6 +255,49 @@ def read_fibre(folder, name: str) -> np.ndarray:
         return data["fibre_deg"]
 
 
+TOW_TABLE_FILE = "tow_table.csv"
+TOW_TABLE_COLUMNS = (
+    "revolution",
+    "visible",
+    "x_mm",
+    "y_mm",
+    "z_mm",
+    "planned_angle_deg",
+    "delta_position_mm",
+    "delta_angle_deg",
+    "tow_cells",
+)
+
+
+def write_tow_table(folder, rows: list[dict]):
+    """Tow table (one row per revolution) as CSV; NaN where not measured."""
+    lines = [",".join(TOW_TABLE_COLUMNS)]
+    for row in rows:
+        lines.append(",".join(str(row[c]) for c in TOW_TABLE_COLUMNS))
+    text = "\n".join(lines) + "\n"
+    (Path(folder) / TOW_TABLE_FILE).write_text(text, encoding="utf-8")
+
+
+_TOW_TABLE_TYPES = {
+    "revolution": int,
+    "tow_cells": int,
+    "visible": lambda v: v == "True",
+}
+
+
+def read_tow_table(folder) -> list[dict]:
+    """Tow table rows as written by `write_tow_table` (NaN where not measured)."""
+    lines = (Path(folder) / TOW_TABLE_FILE).read_text(encoding="utf-8").splitlines()
+    header = lines[0].split(",")
+    return [
+        {
+            c: _TOW_TABLE_TYPES.get(c, float)(v)
+            for c, v in zip(header, line.split(","), strict=True)
+        }
+        for line in lines[1:]
+    ]
+
+
 PATH_HEADER = "Point number,X-coordinate (mm),Y-coordinate (mm),Z-coordinate (mm)"
 
 

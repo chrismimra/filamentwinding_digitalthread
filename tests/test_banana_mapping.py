@@ -5,21 +5,15 @@ this checks the inverse forward model beyond analytic surfaces. Expected
 values come from the committed ground truth.
 """
 
-from pathlib import Path
-
 import numpy as np
 import pytest
 
-from digital_thread import conversion, dataset, geometry, mapping
-
-RUN = Path(__file__).parents[1] / "demoData" / "synthetic" / "banana" / "run"
+from digital_thread import conversion, dataset, mapping
 
 
 @pytest.fixture(scope="module")
-def rev002():
-    run = dataset.read_run(RUN)
-    cal = dataset.read_calibration(run.calibration_folder)
-    geo = geometry.compute(cal)
+def rev002(banana_geometry):
+    run, cal, geo = banana_geometry
     maps = conversion.convert(dataset.read_frame(run, "rev002"), run.polar_pattern)
     fibre = mapping.fibre_angles(maps, geo, cal, run.processing)
     truth = np.load(run.folder / "rev002_truth.npz")
