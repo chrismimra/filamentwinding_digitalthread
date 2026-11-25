@@ -197,3 +197,24 @@ def test_station_window_works_through_jobs(cylinder_geometry, tmp_path):
         _wait(app, beating)
     finally:
         window.close()
+
+
+def test_a_failed_run_shows_its_message_on_the_capture_station(capture):
+    _, win, run, share = capture
+    station = stations.ProcessingStation(share)
+    folder = _shared_copy(run, share, "broken_run")
+    (folder / run.tow_file).unlink()
+    assert station.poll_once() == folder
+    assert stations.job_state(folder) == "failed"
+    win.results.refresh()
+    text = win.results.runs.item(0).text()
+    assert text.startswith("broken_run: failed") and run.tow_file in text
+
+
+def test_an_interrupted_job_is_redone_at_the_next_start(cylinder_geometry, tmp_path):
+    share = tmp_path / "share"
+    stations.ProcessingStation(share)
+    folder = _shared_copy(cylinder_geometry[0], share, "interrupted")
+    stations.write_status(folder, "working", progress=[1, 4])  # then it closed
+    assert stations.ProcessingStation(share).poll_once() == folder
+    assert stations.job_state(folder) == "done"

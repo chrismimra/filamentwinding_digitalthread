@@ -719,6 +719,8 @@ class ResultsTab(QWidget):
             status = stations.read_json(folder / stations.STATUS_FILE) or {}
             if state == "working" and status.get("progress"):
                 text += " {}/{}".format(*status["progress"])
+            if state == "failed":
+                text += f"\n{status.get('message', '')}"
             self.runs.addItem(text)
         for name, state in self._states.items():
             fresh = state == "done" and old.get(name, "") != "done"
