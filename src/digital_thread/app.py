@@ -14,6 +14,7 @@ import functools
 import inspect
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -753,16 +754,29 @@ class ProcessThread(QThread):
 
 
 class MirrorThread(QThread):
-    """Copies the spooled runs to the shared folder in the background, so the
-    GUI never waits for the network."""
+    """Copies the spooled runs to the shared folder in the background, and
+    keeps the heartbeats, so the GUI never waits for the network."""
 
-    def __init__(self):
+    def __init__(self, share):
         super().__init__()
         self.mirrors = []
         self._stop = threading.Event()
+        self.processing_alive = False
+        if share is not None:
+            self.heartbeat = stations.Heartbeat(share, stations.CAPTURE_HEARTBEAT)
+            self.watch = stations.Watch(share, stations.PROCESSING_HEARTBEAT)
 
     def run(self):
+        last_beat = 0.0
         while not self._stop.is_set():
+            self.processing_alive = self.watch.alive()
+            if time.monotonic() - last_beat >= stations.HEARTBEAT_S:
+                try:
+                    if self.heartbeat.path.parent.is_dir():
+                        self.heartbeat.beat()
+                        last_beat = time.monotonic()
+                except OSError:
+                    pass  # share unreachable
             for mirror in list(self.mirrors):
                 try:
                     if mirror.sync():
@@ -793,9 +807,18 @@ class MainWindow(QMainWindow):
         self.spool = Path(spool) if spool is not None else default_spool()
         self.recorded_here = set()  # run IDs recorded in this session
         self._mirrors = {}
-        self.mirror_thread = MirrorThread()
+        self.mirror_thread = MirrorThread(self.share)
+        self.offline_banner = QLabel(
+            "Processing station offline: capture works, jobs wait until it is started."
+        )
+        self.offline_banner.setStyleSheet("background: #c62828; color: white;")
+        self.offline_banner.setMinimumHeight(40)
+        self.offline_banner.hide()
         if self.share is not None:
             self.mirror_thread.start()
+            self.banner_timer = QTimer(self)
+            self.banner_timer.timeout.connect(self.show_liveness)
+            self.banner_timer.start(500)
         self.tabs = QTabWidget()
         self.preview = PreviewTab(self)
         self.calibration = CalibrationTab(self)
@@ -808,7 +831,12 @@ class MainWindow(QMainWindow):
             (self.results, "Results"),
         ):
             self.tabs.addTab(widget, name)
-        self.setCentralWidget(self.tabs)
+        central = QWidget()
+        column = QVBoxLayout(central)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.addWidget(self.offline_banner)
+        column.addWidget(self.tabs, stretch=1)
+        self.setCentralWidget(central)
         self.grabber = Grabber(camera)
         self.grabber.frame.connect(self.on_frame)
         self.grabber.start()
@@ -843,6 +871,9 @@ class MainWindow(QMainWindow):
     def set_gain(self, value):
         with self.grabber.lock:
             self.camera.set_gain_db(value)
+
+    def show_liveness(self):
+        self.offline_banner.setVisible(not self.mirror_thread.processing_alive)
 
     def shared_run(self, run_id):
         """The run's folder in the shared folder (None without the capture role)."""

@@ -5,6 +5,7 @@ temporary shared folder; the processing station works on the same folder, one
 `poll_once()` per call.
 """
 
+import shutil
 import threading
 import time
 
@@ -17,6 +18,7 @@ from digital_thread import dataset, stations
 from digital_thread.app import MainWindow
 from digital_thread.camera import ReplayCamera
 from digital_thread.recorder import Recorder, RecordSettings
+from digital_thread.station import StationWindow
 
 
 def _wait(app, condition, timeout_s=60):
@@ -149,3 +151,49 @@ def test_the_spool_keeps_a_run_until_it_is_done(tmp_path):
     (spool / "not_copied").mkdir()
     stations.clean_spool(spool, share)
     assert sorted(p.name for p in spool.iterdir()) == ["not_copied", "waiting_run"]
+
+
+def test_offline_banner_while_recording_without_the_processing_station(capture):
+    app, win, run, share = capture
+    _wait(app, lambda: not win.offline_banner.isHidden())
+    assert "Processing station offline" in win.offline_banner.text()
+    _record(app, win, run, "offline_run")  # recording does not wait for it
+    assert dataset.read_run(win.spool / "offline_run").frames[-1].name == "rev002"
+    station = stations.ProcessingStation(share)
+
+    def beating():
+        station.heartbeat.beat()
+        return win.offline_banner.isHidden()
+
+    _wait(app, beating)
+
+
+def _shared_copy(run, share, run_id):
+    """The committed run as a run job in the share, with its own bundle copy."""
+    folder = share / stations.RUNS / run_id
+    shutil.copytree(run.folder, folder)
+    shutil.copytree(run.calibration_folder, folder / "calibration")
+    copied = dataset.read_run(folder)
+    copied.calibration = "calibration"
+    dataset.write_run(folder, copied)
+    dataset.write_json(folder / stations.JOB_FILE, {"kind": "run"})
+    return folder
+
+
+def test_station_window_works_through_jobs(cylinder_geometry, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    share = tmp_path / "share"
+    window = StationWindow(share)
+    try:
+        folder = _shared_copy(cylinder_geometry[0], share, "job_run")
+        _wait(app, lambda: stations.job_state(folder) == "done", timeout_s=600)
+        _wait(app, lambda: "run job_run done" in window.log.toPlainText())
+        heartbeat = stations.Heartbeat(share, stations.CAPTURE_HEARTBEAT)
+
+        def beating():
+            heartbeat.beat()
+            return "connected" in window.capture_state.text()
+
+        _wait(app, beating)
+    finally:
+        window.close()
