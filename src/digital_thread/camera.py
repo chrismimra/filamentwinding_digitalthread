@@ -4,7 +4,7 @@ A camera grabs raw frames (uint16, 3000 x 4096) with a timestamp in seconds
 from its own clock. Trigger mode "free" runs continuously (Preview);
 "hardware" exposes one frame per rising edge on Line 1; "software" one frame
 per `software_trigger()`, which the app calls for each pin pulse on the Pi's
-GPIO26 (pin input, section 3).
+GPIO2 (pin input, section 3).
 """
 
 import threading
