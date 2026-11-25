@@ -130,3 +130,18 @@ def test_new_reference_restarts_the_frame_log(cylinder_geometry, tmp_path):
         ("rev000", 12.0),
     ]
     assert rec_run.missed_revolutions == [] and rec_run.dropped_bounces_s == []
+
+
+def test_run_carries_its_calibration_bundle(cylinder_geometry, tmp_path):
+    run, cal, _ = cylinder_geometry
+    camera = ReplayCamera(run.folder)
+    rec = Recorder(tmp_path / "run", _settings(run), cal, camera.polar_pattern, {})
+    rec.capture_reference()
+    rec.on_frame(*camera.grab())
+    recorded = dataset.read_run(tmp_path / "run")
+    # A recalibration later must not change the run: the bundle is a copy.
+    assert recorded.calibration == "calibration"
+    assert recorded.calibration_folder == (tmp_path / "run" / "calibration").resolve()
+    for name in ("calibration.json", "mesh.npz"):
+        copy = recorded.calibration_folder / name
+        assert copy.read_bytes() == (run.calibration_folder / name).read_bytes()

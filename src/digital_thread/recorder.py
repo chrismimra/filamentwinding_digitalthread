@@ -8,10 +8,11 @@ Revolution index k = round((t - t0) / T), with t0 the first frame after
 `start()` and T the nominal period. A frame less than T/2 after the previous
 kept frame (or with an index already logged) is a pin bounce and is dropped; skipped indices are logged as
 missed. Timestamps in the frame log are seconds from the reference frame.
-Raw pixels outside the crop polygon are set to 0 before saving.
+Raw pixels outside the crop polygon are set to 0 before saving. The run folder
+carries a copy of the calibration bundle (`calibration/`), so a later
+recalibration does not change the run.
 """
 
-import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,11 +32,7 @@ class RecordSettings:
     processing: dataset.Processing = field(default_factory=dataset.Processing)
 
 
-def _relative(target, start):
-    try:
-        return Path(os.path.relpath(target, start)).as_posix()
-    except ValueError:  # different drives on Windows
-        return Path(target).resolve().as_posix()
+BUNDLE_FOLDER = "calibration"  # the run's copy of its calibration bundle
 
 
 class Recorder:
@@ -46,7 +43,7 @@ class Recorder:
         self._inside = np.repeat(np.repeat(geometry.crop_mask(cal), 2, 0), 2, 1)
         self.run = dataset.Run(
             run_id=settings.run_id,
-            calibration=_relative(settings.calibration_folder, self.folder),
+            calibration=BUNDLE_FOLDER,
             tow_file=Path(settings.tow_file).name if settings.tow_file else None,
             tow_width_mm=settings.tow_width_mm,
             polar_pattern=tuple(polar_pattern),
@@ -86,6 +83,11 @@ class Recorder:
         """Handle a grabbed frame; returns the frame name if it was saved."""
         if self.state == "reference":
             self.folder.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(
+                self.settings.calibration_folder,
+                self.folder / BUNDLE_FOLDER,
+                dirs_exist_ok=True,  # a new reference in the same run
+            )
             if self.settings.tow_file:
                 shutil.copyfile(self.settings.tow_file, self.folder / self.run.tow_file)
             self._t_ref = timestamp_s
