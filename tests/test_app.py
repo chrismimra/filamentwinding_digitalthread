@@ -62,3 +62,17 @@ def test_results_tab_shows_the_tow_viewer(window, processed_committed):
     out, _ = processed_committed("cylinder")
     win.results.open(run.folder, out)
     assert "Revolution 0" in win.results.viewer.text
+
+
+def test_calibration_tab_shows_a_live_view(window):
+    app, win, _ = window
+    tab = win.calibration
+    win.tabs.setCurrentWidget(tab)
+    _wait(app, lambda: tab.live_frames > 0)
+    assert tab.board_hint.text() == "Board not found"  # cylinder frames: no board
+    tab.live.setChecked(False)
+    frames = tab.live_frames
+    for _ in range(50):  # let further frames arrive
+        app.processEvents()
+        time.sleep(0.01)
+    assert tab.live_frames <= frames + 1  # at most one frame already on its way

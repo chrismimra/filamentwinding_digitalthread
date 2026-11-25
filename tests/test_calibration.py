@@ -123,3 +123,14 @@ def test_bundle_keeps_the_marker_table(banana, tmp_path, truth):
         0.3,
     )
     assert (tmp_path / dataset.MARKER_TABLE_FILE).read_bytes() == table.read_bytes()
+
+
+def test_live_board_check_finds_the_board_only_where_it_is():
+    board = _images("board")[0]
+    corners = calibration.find_board(board)
+    assert corners is not None and corners.shape == (54, 2)
+    h, w = board.shape
+    assert (
+        (corners >= 0).all() and (corners[:, 0] < w).all() and (corners[:, 1] < h).all()
+    )
+    assert calibration.find_board(_images("markers")[0]) is None

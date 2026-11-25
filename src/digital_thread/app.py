@@ -290,9 +290,15 @@ class CalibrationTab(QWidget):
         self.save_button.clicked.connect(self.save)
         self.status = QLabel()
         self.status.setWordWrap(True)
+        self.live = QCheckBox("Live view")
+        self.live.setMinimumHeight(48)
+        self.live.setChecked(True)
+        self.board_hint = QLabel()
+        self.live_frames = 0
 
         form = QFormLayout()
         form.addRow(QLabel("<b>A) Intrinsic optics</b>"))
+        form.addRow(self.live, self.board_hint)
         form.addRow(self.board_button)
         form.addRow("Image folder", images_row)
         form.addRow(load_images)
@@ -333,10 +339,14 @@ class CalibrationTab(QWidget):
             self.status.setText("Waiting for 5 pin pulses ...")
 
     def on_frame(self, raw, timestamp_s):
-        if self._capture is None:
+        showing = self.window.tabs.currentWidget() is self and self.live.isChecked()
+        if self._capture is None and not showing:
             return
         s0 = conversion.convert(raw, self.window.camera.polar_pattern).s0
         image = calibration.to_uint8(s0)
+        if self._capture is None:
+            self.show_live(image)
+            return
         if self._capture == "board":
             self.session.board_images.append(image)
             self._capture = None
@@ -345,7 +355,8 @@ class CalibrationTab(QWidget):
             if n < len(BOARD_POSITIONS):
                 text += f"\nNext: {BOARD_POSITIONS[n]}"
             self.status.setText(text)
-            self.show_image(image, "board")
+            if not self.live.isChecked():
+                self.show_image(image, "board")
             return
         self.session.marker_images.append(image)
         n = len(self.session.marker_images)
@@ -353,7 +364,37 @@ class CalibrationTab(QWidget):
         if n == calibration.POSITION_IMAGES:
             self._capture = None
             self.window.release_trigger()
+        self.live.setChecked(False)  # keep the marker image for the crop polygon
         self.show_image(image, "markers")
+
+    def show_live(self, image):
+        """Live camera image (half resolution) with the board corners if found."""
+        corners = calibration.find_board(image)
+        h, w = image.shape
+        if self._shown != "live":
+            self._shown = "live"
+            self.ax.clear()
+            self.ax.axis("off")
+            self._live_image = self.ax.imshow(
+                image[::2, ::2],
+                cmap="gray",
+                vmin=0,
+                vmax=255,
+                extent=(-0.5, w - 0.5, h - 0.5, -0.5),
+            )
+            (self._live_corners,) = self.ax.plot([], [], "o", color="lime", ms=4)
+        else:
+            self._live_image.set_data(image[::2, ::2])
+        xy = corners if corners is not None else np.empty((0, 2))
+        self._live_corners.set_data(xy[:, 0], xy[:, 1])
+        n = len(self.session.board_images)
+        self.board_hint.setText(
+            f"Board found ({n}/{calibration.INTRINSIC_IMAGES} captured)"
+            if corners is not None
+            else "Board not found"
+        )
+        self.live_frames += 1
+        self.canvas.draw_idle()
 
     def capturing(self):
         """True while marker images are taken at the pin pulse."""
@@ -373,6 +414,7 @@ class CalibrationTab(QWidget):
             f"{len(self.session.marker_images)} marker images"
         )
         if self.session.marker_images:
+            self.live.setChecked(False)
             self.show_image(self.session.marker_images[0], "markers")
 
     def show_image(self, image, kind):
@@ -447,6 +489,7 @@ class CalibrationTab(QWidget):
     def clear_polygon(self):
         self.session.crop_polygon = None
         if self.session.marker_images:
+            self.live.setChecked(False)
             self.show_image(self.session.marker_images[0], "markers")
 
     def _draw_polygon(self):

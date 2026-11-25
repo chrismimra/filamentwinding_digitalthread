@@ -100,6 +100,19 @@ class Intrinsics:
     used: int  # images in which the board was found
 
 
+LIVE_SCALE = 2  # live board check on an image reduced by this factor (speed)
+
+
+def find_board(image, inner_corners=(9, 6)):
+    """Quick check for the live view: inner board corners (n, 2) in full-image
+    pixels, or None if the whole board is not found."""
+    small = np.ascontiguousarray(image[::LIVE_SCALE, ::LIVE_SCALE])
+    found, corners = cv2.findChessboardCorners(
+        small, inner_corners, flags=cv2.CALIB_CB_FAST_CHECK
+    )
+    return corners.reshape(-1, 2) * LIVE_SCALE if found else None
+
+
 def intrinsic(images, inner_corners=(9, 6), tile_mm=40.0) -> Intrinsics:
     """Intrinsics of the super-pixel image from 8-bit S0 checkerboard images."""
     cols, rows = inner_corners
