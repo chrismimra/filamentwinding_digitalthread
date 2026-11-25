@@ -79,7 +79,7 @@ def test_pose_recovered_from_the_marker_images(banana, truth):
     corners = calibration.marker_corners(cal, centres, 30.0)
     pose = calibration.position(_images("markers"), ids, corners, cal.K, cal.distortion)
     assert pose.used == 5
-    assert set(pose.marker_errors_px) == {9, 10}  # 8 lies just outside the view
+    assert set(pose.marker_errors_px) == {9, 10, 19, 20, 21}  # 8 just outside
     centre = -np.array(truth["R"]).T @ np.array(truth["t"])
     np.testing.assert_allclose(pose.centre, centre, atol=1.0)
     assert _angle_deg(pose.R, np.array(truth["R"])) < 0.1
@@ -105,9 +105,11 @@ def test_body_angle_facing_the_camera(banana):
 
 def test_markers_far_from_the_mesh_are_reported(banana):
     cal, ids, centres = banana
+    centres = centres.copy()
+    centres[ids == 5, 2] = 112.5  # a sign typo: beyond the banana
     _, _, distance = calibration.surface_points(cal, centres)
     off = ids[distance > calibration.MAX_OFF_MESH_MM]
-    assert sorted(off) == [5, 6, 16, 17]  # z = 112.5 lies beyond the banana
+    assert sorted(off) == [5]
 
 
 def test_bundle_keeps_the_marker_table(banana, tmp_path, truth):

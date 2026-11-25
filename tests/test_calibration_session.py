@@ -52,7 +52,7 @@ def test_session_writes_a_bundle_that_processes(truth, tmp_path):
     session.marker_images = [
         dataset.read_image(f) for f in sorted(IMAGES.glob("markers_*.png"))
     ]
-    assert session.markers_off_mesh() == [5, 6, 16, 17]
+    assert session.markers_off_mesh() == []
     session.solve_position()
     assert session.body_angle_guide() == pytest.approx(90.0, abs=1.0)
     session.touch_down_deg = banana.touch_down_deg
@@ -85,7 +85,7 @@ def test_calibration_tab_runs_the_steps(cylinder_geometry, truth, tmp_path):
         tab.camera_position[1].setValue(250)
         tab.solve_position()
         text = tab.status.text()
-        assert "Not on the mesh (ignored): markers [5, 6, 16, 17]" in text
+        assert "Not on the mesh" not in text
         assert "WARNING" not in text and "Body angle facing the camera" in text
         for x, y in [(300, 500), (1700, 500), (1700, 1000)]:
             tab.session.crop_polygon = (
