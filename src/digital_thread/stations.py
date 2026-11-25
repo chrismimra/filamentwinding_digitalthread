@@ -8,6 +8,10 @@ The stations exchange jobs as files in one shared folder:
 A job folder is complete when the capture station has written `job.json`
 (its last file). The processing station writes `status.json` in the same
 folder; the capture station only reads it.
+
+The processing station creates `runs/` and `calibrations/` when it starts. The
+capture station writes only into a share that holds them: an unmounted share
+is an empty local folder, and frames written there would never arrive.
 """
 
 import json
@@ -38,6 +42,10 @@ def job_state(folder):
     if status is not None:
         return status["state"]
     return "waiting" if (folder / JOB_FILE).exists() else "copying"
+
+
+class ShareUnreachable(OSError):
+    """The shared folder is not mounted (or the processing station never ran)."""
 
 
 def write_status(folder, state, message="", progress=None):
@@ -86,6 +94,8 @@ class Mirror:
             return True
         if not self.source.exists():
             return False
+        if not self.target.parent.is_dir():
+            raise ShareUnreachable(f"{self.target.parent} is not reachable")
         for path, relative, key in self._pending():
             target = self.target / relative
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -99,11 +109,23 @@ class Mirror:
         return self.job_written
 
 
+def clean_spool(spool, share):
+    """Remove spooled runs that the processing station has confirmed done."""
+    spool = Path(spool)
+    if not spool.exists():
+        return
+    for folder in spool.iterdir():
+        if folder.is_dir() and job_state(Path(share) / RUNS / folder.name) == "done":
+            shutil.rmtree(folder, ignore_errors=True)
+
+
 class ProcessingStation:
     """Works through the jobs in the shared folder, one per `poll_once()`."""
 
     def __init__(self, share):
         self.share = Path(share)
+        for name in (RUNS, CALIBRATIONS):
+            (self.share / name).mkdir(parents=True, exist_ok=True)
 
     def _jobs(self):
         jobs = [

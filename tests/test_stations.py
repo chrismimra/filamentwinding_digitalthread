@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication
 from digital_thread import dataset, stations
 from digital_thread.app import MainWindow
 from digital_thread.camera import ReplayCamera
+from digital_thread.recorder import Recorder, RecordSettings
 
 
 def _wait(app, condition, timeout_s=60):
@@ -77,6 +78,7 @@ def _record(app, win, run, run_id):
 
 def test_a_recorded_run_is_processed_and_opened(capture, processed_committed):
     app, win, run, share = capture
+    station = stations.ProcessingStation(share)
     _record(app, win, run, "shared_run")
     folder = share / stations.RUNS / "shared_run"
     _wait(app, lambda: stations.job_state(folder) == "waiting")
@@ -85,7 +87,7 @@ def test_a_recorded_run_is_processed_and_opened(capture, processed_committed):
 
     win.results.refresh()
     assert win.results.states()["shared_run"] == "waiting"
-    assert stations.ProcessingStation(share).poll_once() == folder
+    assert station.poll_once() == folder
     assert stations.job_state(folder) == "done"
 
     win.results.refresh()
@@ -101,3 +103,49 @@ def test_a_recorded_run_is_processed_and_opened(capture, processed_committed):
                 np.testing.assert_allclose(b[key], value, atol=1e-9)
             else:
                 assert b[key] == value
+
+
+def test_a_share_outage_delays_but_never_loses_frames(cylinder_geometry, tmp_path):
+    run, cal, _ = cylinder_geometry
+    share, spool = tmp_path / "share", tmp_path / "spool" / "outage"
+    camera = ReplayCamera(run.folder)
+    settings = RecordSettings(
+        run_id="outage",
+        calibration_folder=run.calibration_folder,
+        tow_file=run.folder / run.tow_file,
+        tow_width_mm=run.tow_width_mm,
+        nominal_period_s=run.nominal_period_s,
+    )
+    rec = Recorder(spool, settings, cal, camera.polar_pattern, {})
+    target = share / stations.RUNS / "outage"
+    mirror = stations.Mirror(spool, target)
+    rec.capture_reference()
+    rec.on_frame(*camera.grab())
+    rec.start()
+    rec.on_frame(*camera.grab())
+    with pytest.raises(OSError):
+        mirror.sync()  # share not mounted (no runs folder): nothing written
+    assert not share.exists()
+    while (grab := camera.grab()) is not None:
+        rec.on_frame(*grab)
+    rec.stop()
+    mirror.finish()
+    (share / stations.RUNS).mkdir(parents=True)  # the share is back
+    assert mirror.sync()
+    assert (target / stations.JOB_FILE).exists()
+    copied = dataset.read_run(target)
+    assert [f.name for f in copied.frames] == [f.name for f in run.frames]
+    for frame in copied.frames:
+        assert (target / frame.file).read_bytes() == (spool / frame.file).read_bytes()
+
+
+def test_the_spool_keeps_a_run_until_it_is_done(tmp_path):
+    share, spool = tmp_path / "share", tmp_path / "spool"
+    for run_id in ("done_run", "waiting_run"):
+        (spool / run_id).mkdir(parents=True)
+        (share / stations.RUNS / run_id).mkdir(parents=True)
+        dataset.write_json(share / stations.RUNS / run_id / stations.JOB_FILE, {})
+    stations.write_status(share / stations.RUNS / "done_run", "done")
+    (spool / "not_copied").mkdir()
+    stations.clean_spool(spool, share)
+    assert sorted(p.name for p in spool.iterdir()) == ["not_copied", "waiting_run"]

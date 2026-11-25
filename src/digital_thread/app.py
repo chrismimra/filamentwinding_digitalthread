@@ -702,6 +702,7 @@ class ResultsTab(QWidget):
 
     def refresh(self):
         """Read the run states; open a run of this session once it is done."""
+        stations.clean_spool(self.window.spool, self.window.share)
         runs = self.window.share / stations.RUNS
         folders = sorted(
             (f for f in runs.iterdir() if f.is_dir()) if runs.exists() else [],
