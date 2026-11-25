@@ -37,9 +37,9 @@ def _press(gpio):
         gpio.drive_low()
         gpio.drive_high()
     gpio.drive_low()
-    time.sleep(0.03)
+    time.sleep(0.1)  # well above the debounce, also on a busy machine
     gpio.drive_high()
-    time.sleep(0.03)
+    time.sleep(0.1)  # well above the debounce, also on a busy machine
 
 
 def _start_reference(app, win, run, tmp_path, run_id):
