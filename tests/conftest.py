@@ -21,7 +21,7 @@ def _load_with_geometry(name):
 
 @pytest.fixture
 def gpio():
-    """gpiozero mock pins in place of the Pi's GPIO: the GPIO26 mock pin."""
+    """gpiozero mock pins in place of the Pi's GPIO: the GPIO2 mock pin."""
     from gpiozero import Device
     from gpiozero.pins.mock import MockFactory
 

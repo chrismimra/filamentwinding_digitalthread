@@ -44,17 +44,17 @@ class PinCamera(ReplayCamera):
 
 
 def _pulse(gpio):
-    """The pin passes the normally open switch on GPIO26."""
+    """The pin passes the normally open switch on GPIO2."""
     gpio.drive_low()
-    time.sleep(0.03)
+    time.sleep(0.1)  # well above the debounce, also on a busy machine
     gpio.drive_high()
-    time.sleep(0.03)
+    time.sleep(0.1)  # well above the debounce, also on a busy machine
 
 
 @pytest.fixture
 def capture(cylinder_geometry, tmp_path, gpio):
     """The capture station on a shared folder, with its local spool and the
-    pin switch on (mock) GPIO26."""
+    pin switch on (mock) GPIO2."""
     app = QApplication.instance() or QApplication([])
     run = cylinder_geometry[0]
     share, spool = tmp_path / "share", tmp_path / "spool"

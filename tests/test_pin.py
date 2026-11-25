@@ -1,4 +1,4 @@
-"""Pin input on the Raspberry Pi (section 3): a normally open switch on GPIO26.
+"""Pin input on the Raspberry Pi (section 3): a normally open switch on GPIO2.
 
 gpiozero's mock pins stand in for the Pi's GPIO, so the tests run anywhere.
 """
@@ -39,7 +39,7 @@ def test_each_closing_of_the_switch_is_one_pulse(gpio):
 
 
 def test_without_gpio_the_pin_input_reports_it(no_gpio):
-    with pytest.raises(RuntimeError, match="GPIO26"):
+    with pytest.raises(RuntimeError, match="GPIO2"):
         pin.GpioPin(lambda: None)
 
 

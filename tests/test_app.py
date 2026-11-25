@@ -32,14 +32,14 @@ def window(cylinder_geometry, tmp_path):
 
 
 def _press(gpio):
-    """The pin passes the normally open switch on GPIO26 (with contact chatter)."""
+    """The pin passes the normally open switch on GPIO2 (with contact chatter)."""
     for _ in range(3):
         gpio.drive_low()
         gpio.drive_high()
     gpio.drive_low()
-    time.sleep(0.03)
+    time.sleep(0.1)  # well above the debounce, also on a busy machine
     gpio.drive_high()
-    time.sleep(0.03)
+    time.sleep(0.1)  # well above the debounce, also on a busy machine
 
 
 def _start_reference(app, win, run, tmp_path, run_id):
@@ -77,10 +77,10 @@ def test_without_gpio_recording_says_so(cylinder_geometry, no_gpio, tmp_path):
     app = QApplication.instance() or QApplication([])
     run = cylinder_geometry[0]
     store = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
-    win = MainWindow(ReplayCamera(run.folder, loop=True), store)  # default: GPIO26
+    win = MainWindow(ReplayCamera(run.folder, loop=True), store)  # default: GPIO2
     try:
         tab = _start_reference(app, win, run, tmp_path, "no_gpio_run")
-        assert "No GPIO26" in tab.status.text()
+        assert "No GPIO2" in tab.status.text()
         assert not tab.record_button.isEnabled() and win.grabber.mode == "free"
     finally:
         win.close()
@@ -138,7 +138,7 @@ def test_without_gpio_the_pin_input_stays_on_the_camera_line(window, no_gpio):
     _, win, _ = window
     choice = win.preview.pin_input
     choice.setCurrentIndex(choice.findData("gpio"))
-    assert "No GPIO26" in win.preview.status.text()
+    assert "No GPIO2" in win.preview.status.text()
     assert choice.currentData() == "line" and win.grabber.pin_input == "line"
     assert win.store.value("pin_input") == "line"
 
