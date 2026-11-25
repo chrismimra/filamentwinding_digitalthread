@@ -147,23 +147,29 @@ class Run:
 REPLACE_ATTEMPTS = 20
 
 
+def write_json(path, data):
+    """Written to a temporary file first, so a crash or a reader on another
+    station never sees half a file."""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError:  # briefly held by a sync client or virus scanner
+            if attempt == REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(0.1)
+
+
 def write_run(folder, run: Run):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     meta = asdict(run)
     meta.pop("folder")
     meta["polar_pattern"] = list(run.polar_pattern)
-    # Written to a temporary file first, so a crash never leaves half a run.json.
-    tmp = folder / "run.json.tmp"
-    tmp.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    for attempt in range(REPLACE_ATTEMPTS):
-        try:
-            tmp.replace(folder / "run.json")
-            return
-        except PermissionError:  # briefly held by a sync client or virus scanner
-            if attempt == REPLACE_ATTEMPTS - 1:
-                raise
-            time.sleep(0.1)
+    write_json(folder / "run.json", meta)
 
 
 def read_run(folder) -> Run:

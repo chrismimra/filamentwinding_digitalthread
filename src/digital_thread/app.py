@@ -1,8 +1,11 @@
 """Monitoring app (production, slices 1-3): Preview, Calibration, Record, Results.
 
-Command: `uv run python -m digital_thread.app [--replay <run folder>]`
+Command: `uv run python -m digital_thread.app [--replay <run folder>]
+[--role capture --share <folder> [--spool <folder>]]`
 With `--replay`, a replay camera serves the frames of a (synthetic) run instead
-of the Basler camera. The tabs are thin; the logic sits in the camera,
+of the Basler camera. With the capture role (section 8), runs are recorded into
+a local spool, copied to the shared folder and processed by the processing
+station; the Results tab lists the runs in the shared folder. The tabs are thin; the logic sits in the camera,
 preview, calibration, recorder, process and viewer modules.
 """
 
@@ -17,7 +20,7 @@ from pathlib import Path
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from PySide6.QtCore import QSettings, Qt, QThread, Signal
+from PySide6.QtCore import QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -28,6 +31,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -36,12 +40,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from digital_thread import calibration, conversion, dataset, preview, process
+from digital_thread import (
+    calibration,
+    conversion,
+    dataset,
+    preview,
+    process,
+    stations,
+)
 from digital_thread.camera import BaslerCamera, ReplayCamera
 from digital_thread.recorder import Recorder, RecordSettings
 from digital_thread.viewer import TowViewer
 
 TOUCH_FONT = 14
+MIRROR_INTERVAL_S = 0.5  # how often new files are copied to the shared folder
+RESULTS_REFRESH_MS = 2000  # how often the Results tab reads the run states
 PREVIEW_WIDTH = 1024  # displayed width of camera images (super-pixel image halved)
 
 
@@ -173,6 +186,9 @@ class PreviewTab(QWidget):
         self.save_location.setText(
             window.store.value("save_location", str(Path.home()))
         )
+        if window.share is not None:  # capture role: runs go to the local spool
+            self.save_location.setText(str(window.spool))
+            save_row.setEnabled(False)
         self.save_location.textChanged.connect(
             lambda text: window.store.setValue("save_location", text)
         )
@@ -528,6 +544,7 @@ class RecordTab(QWidget):
         self.incidence = spin(20.0, 0, 89, 1, " °")
         self.auto_process = QCheckBox("Process the run after Stop")
         self.auto_process.setMinimumHeight(48)
+        self.auto_process.setVisible(window.share is None)  # capture role: always
         self.reference_button = touch_button("Capture reference")
         self.record_button = touch_button("Record")
         self.stop_button = touch_button("Stop")
@@ -575,7 +592,8 @@ class RecordTab(QWidget):
     @reported
     def capture_reference(self):
         folder = self.run_folder()
-        if folder.exists():
+        shared = self.window.shared_run(folder.name)
+        if folder.exists() or (shared is not None and shared.exists()):
             QMessageBox.warning(
                 self, "Run exists", f"{folder} exists; change the run ID."
             )
@@ -600,6 +618,7 @@ class RecordTab(QWidget):
         )
         self.window.set_trigger("hardware")
         self.recorder.capture_reference()
+        self.window.mirror(folder)
         self.status.setText("Waiting for the next pin pulse (reference) ...")
 
     @reported
@@ -617,9 +636,12 @@ class RecordTab(QWidget):
         text = f"Stopped: {self.recorder.frame_count} frames in {self.recorder.folder}"
         if run.missed_revolutions:
             text += f"\nMissed revolutions: {run.missed_revolutions}"
-        self.status.setText(text)
-        if self.auto_process.isChecked():
+        if self.window.share is not None:
+            self.window.hand_over(self.recorder.folder)
+            text += "\nCopying to the processing station ..."
+        elif self.auto_process.isChecked():
             self.window.process(self.recorder.folder)
+        self.status.setText(text)
 
     def on_frame(self, raw, timestamp_s):
         if self.recorder is None:
@@ -643,7 +665,8 @@ class RecordTab(QWidget):
 
 
 class ResultsTab(QWidget):
-    """The tow viewer of a processed run, embedded in a Qt canvas."""
+    """The tow viewer of a processed run, embedded in a Qt canvas. With the
+    capture role, also the list of runs in the shared folder with their state."""
 
     def __init__(self, window):
         super().__init__()
@@ -657,9 +680,54 @@ class ResultsTab(QWidget):
         self.figure = Figure(figsize=(14, 8))
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.viewer = None
-        layout = QVBoxLayout(self)
-        layout.addLayout(top)
-        layout.addWidget(self.canvas, stretch=1)
+        self.runs = QListWidget()
+        self.runs.setVisible(window.share is not None)
+        self.runs.setMaximumWidth(360)
+        self.runs.itemClicked.connect(self.open_item)
+        self._states = {}
+        view = QVBoxLayout()
+        view.addLayout(top)
+        view.addWidget(self.canvas, stretch=1)
+        layout = QHBoxLayout(self)
+        layout.addWidget(self.runs)
+        layout.addLayout(view, stretch=1)
+        if window.share is not None:
+            self.timer = QTimer(self)
+            self.timer.timeout.connect(self.refresh)
+            self.timer.start(RESULTS_REFRESH_MS)
+
+    def states(self):
+        """Run ID -> job state, as last read from the shared folder."""
+        return dict(self._states)
+
+    def refresh(self):
+        """Read the run states; open a run of this session once it is done."""
+        runs = self.window.share / stations.RUNS
+        folders = sorted(
+            (f for f in runs.iterdir() if f.is_dir()) if runs.exists() else [],
+            key=lambda f: f.name,
+            reverse=True,  # newest first: run IDs start with the date
+        )
+        old, self._states = self._states, {}
+        self.runs.clear()
+        for folder in folders:
+            state = stations.job_state(folder)
+            self._states[folder.name] = state
+            text = f"{folder.name}: {state}"
+            status = stations.read_json(folder / stations.STATUS_FILE) or {}
+            if state == "working" and status.get("progress"):
+                text += " {}/{}".format(*status["progress"])
+            self.runs.addItem(text)
+        for name, state in self._states.items():
+            fresh = state == "done" and old.get(name, "") != "done"
+            if fresh and name in self.window.recorded_here:
+                self.open(runs / name)
+                self.window.tabs.setCurrentWidget(self)
+
+    def open_item(self, item):
+        name = item.text().split(": ")[0]
+        if self._states.get(name) == "done":
+            self.open(self.window.share / stations.RUNS / name)
 
     def open(self, run_folder, out_folder=None):
         self.run_folder.setText(str(run_folder))
@@ -683,12 +751,50 @@ class ProcessThread(QThread):
             self.done.emit(error)
 
 
+class MirrorThread(QThread):
+    """Copies the spooled runs to the shared folder in the background, so the
+    GUI never waits for the network."""
+
+    def __init__(self):
+        super().__init__()
+        self.mirrors = []
+        self._stop = threading.Event()
+
+    def run(self):
+        while not self._stop.is_set():
+            for mirror in list(self.mirrors):
+                try:
+                    if mirror.sync():
+                        self.mirrors.remove(mirror)
+                except OSError:
+                    pass  # share unreachable: the files stay spooled, retry
+
+            self._stop.wait(MIRROR_INTERVAL_S)
+
+    def stop(self):
+        self._stop.set()
+        self.wait(10_000)
+
+
+def default_spool():
+    return Path.home() / "digital_thread" / "spool"
+
+
 class MainWindow(QMainWindow):
-    def __init__(self, camera, store=None):
+    def __init__(self, camera, store=None, share=None, spool=None):
+        """`share` selects the capture role (section 8): runs are recorded into
+        `spool` and handed over to the processing station through `share`."""
         super().__init__()
         self.setWindowTitle("Tow monitoring")
         self.camera = camera
         self.store = store or QSettings("UniSQ", "DigitalThread")
+        self.share = Path(share) if share is not None else None
+        self.spool = Path(spool) if spool is not None else default_spool()
+        self.recorded_here = set()  # run IDs recorded in this session
+        self._mirrors = {}
+        self.mirror_thread = MirrorThread()
+        if self.share is not None:
+            self.mirror_thread.start()
         self.tabs = QTabWidget()
         self.preview = PreviewTab(self)
         self.calibration = CalibrationTab(self)
@@ -737,6 +843,23 @@ class MainWindow(QMainWindow):
         with self.grabber.lock:
             self.camera.set_gain_db(value)
 
+    def shared_run(self, run_id):
+        """The run's folder in the shared folder (None without the capture role)."""
+        return None if self.share is None else self.share / stations.RUNS / run_id
+
+    def mirror(self, spool_folder):
+        """Start copying a spooled run to the shared folder."""
+        if self.share is None:
+            return
+        mirror = stations.Mirror(spool_folder, self.shared_run(spool_folder.name))
+        self._mirrors[spool_folder.name] = mirror
+        self.mirror_thread.mirrors.append(mirror)
+        self.recorded_here.add(spool_folder.name)
+
+    def hand_over(self, spool_folder):
+        """After Stop: the run becomes a job once every file is copied."""
+        self._mirrors[spool_folder.name].finish()
+
     def process(self, run_folder):
         self.record.status.setText(self.record.status.text() + "\nProcessing ...")
         self._processing = ProcessThread(run_folder)
@@ -752,6 +875,7 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentWidget(self.results)
 
     def closeEvent(self, event):
+        self.mirror_thread.stop()
         self.grabber.stop()
         self.camera.close()
         super().closeEvent(event)
@@ -763,7 +887,14 @@ def main(argv=None):
     parser.add_argument(
         "--speed", type=float, default=1.0, help="replay speed-up (1: nominal period)"
     )
+    parser.add_argument(
+        "--role", choices=["capture"], help="capture station (section 8)"
+    )
+    parser.add_argument("--share", help="shared folder (capture role)")
+    parser.add_argument("--spool", help="local spool folder (capture role)")
     args = parser.parse_args(argv)
+    if args.role == "capture" and not args.share:
+        parser.error("--role capture needs --share")
     app = QApplication.instance() or QApplication(sys.argv)
     font = app.font()
     font.setPointSize(TOUCH_FONT)
@@ -772,7 +903,8 @@ def main(argv=None):
         camera = ReplayCamera(args.replay, speed=args.speed, loop=True)
     else:
         camera = BaslerCamera()
-    window = MainWindow(camera)
+    share = args.share if args.role == "capture" else None
+    window = MainWindow(camera, share=share, spool=args.spool)
     window.showMaximized()
     return app.exec()
 

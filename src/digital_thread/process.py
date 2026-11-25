@@ -37,9 +37,10 @@ def run_geometry(cal, out):
     return geo
 
 
-def process_run(run_folder, out_folder=None) -> Path:
+def process_run(run_folder, out_folder=None, progress=None) -> Path:
     """Conversion, Mapping, Tow matching and export of a finished run.
-    All derived files go to `out_folder` (default: the run folder)."""
+    All derived files go to `out_folder` (default: the run folder).
+    `progress(done, total)` is called after each frame is mapped."""
     run = dataset.read_run(run_folder)
     cal = dataset.read_calibration(run.calibration_folder)
     out = Path(out_folder) if out_folder is not None else run.folder
@@ -47,13 +48,15 @@ def process_run(run_folder, out_folder=None) -> Path:
     geo = run_geometry(cal, out)
 
     fibre = {}
-    for frame in run.frames:
+    for done, frame in enumerate(run.frames, start=1):
         maps = conversion.convert(
             dataset.read_frame(run, frame.name), run.polar_pattern
         )
         dataset.write_polarisation(out, frame.name, maps)
         fibre[frame.name] = mapping.fibre_angles(maps, geo, cal, run.processing)
         dataset.write_fibre(out, frame.name, fibre[frame.name])
+        if progress is not None:
+            progress(done, len(run.frames))
 
     planned = geometry.planned_path(
         cal, dataset.read_path(run.folder / run.tow_file), run.tow_width_mm
