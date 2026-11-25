@@ -2,9 +2,12 @@
 
 A camera grabs raw frames (uint16, 3000 x 4096) with a timestamp in seconds
 from its own clock. Trigger mode "free" runs continuously (Preview);
-"hardware" exposes one frame per rising edge on Line 1 (the pin).
+"hardware" exposes one frame per rising edge on Line 1; "software" one frame
+per `software_trigger()`, which the app calls for each pin pulse on the Pi's
+GPIO26 (pin input, section 3).
 """
 
+import threading
 import time
 from pathlib import Path
 from typing import Protocol
@@ -23,7 +26,8 @@ class Camera(Protocol):
 
     def set_gain_db(self, value: float) -> None: ...
 
-    def set_trigger(self, mode: str) -> None: ...  # "free" or "hardware"
+    def set_trigger(self, mode: str) -> None: ...  # "free", "hardware", "software"
+    def software_trigger(self) -> None: ...  # one frame in "software" mode
 
     def grab(self, timeout_s: float = 1.0) -> tuple[np.ndarray, float] | None: ...
 
@@ -37,6 +41,7 @@ class ReplayCamera:
     log. A frame name may repeat (a pin bounce) or be left out (a missed
     pulse). With `speed`, `grab` waits the time between events divided by it
     (demos); without, frames come at once (tests). `loop` restarts at the end.
+    In "software" trigger mode, each `software_trigger()` releases one frame.
     """
 
     def __init__(self, run_folder, events=None, speed=None, loop=False):
@@ -49,6 +54,7 @@ class ReplayCamera:
         self._next = 0
         self._offset = 0.0  # added to timestamps after each loop
         self._last = None  # (timestamp, monotonic time) of the last served frame
+        self._triggers = threading.Semaphore(0)
 
     def settings(self):
         return dict(self._settings)
@@ -61,8 +67,14 @@ class ReplayCamera:
 
     def set_trigger(self, mode):
         self.trigger = mode
+        self._triggers = threading.Semaphore(0)  # no trigger carried over
+
+    def software_trigger(self):
+        self._triggers.release()
 
     def grab(self, timeout_s=1.0):
+        if self.trigger == "software" and not self._triggers.acquire(timeout=timeout_s):
+            return None  # no trigger within the timeout
         if self._next == len(self.events):
             if not self.loop:
                 return None
@@ -97,7 +109,7 @@ class BaslerCamera:
     """Basler acA4112-30umPOL via pypylon (Mono12, chunk timestamps).
 
     Trigger modes: "free" (continuous, latest image only: Preview), "hardware"
-    (Line 1, rising edge: one frame per pin pulse), "software" (tests).
+    (Line 1, rising edge), "software" (one frame per `software_trigger()`).
     """
 
     def __init__(self, serial=None):

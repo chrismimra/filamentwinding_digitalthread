@@ -7,7 +7,6 @@ temporary shared folder; the processing station works on the same folder, one
 
 import json
 import shutil
-import threading
 import time
 from pathlib import Path
 
@@ -33,30 +32,35 @@ def _wait(app, condition, timeout_s=60):
 
 
 class PinCamera(ReplayCamera):
-    """Serves the run's next frame only when the test calls `pulse()` (the pin
-    passing the sensor) and the camera waits for the hardware trigger."""
-
-    def __init__(self, run_folder):
-        super().__init__(run_folder)
-        self._pulses = threading.Semaphore(0)
-
-    def pulse(self):
-        self._pulses.release()
+    """No frames in free run (the preview must not use up the run); in the
+    pin's software trigger mode one frame per pin pulse, so the recording
+    holds exactly the committed run."""
 
     def grab(self, timeout_s=1.0):
-        if self.trigger != "hardware" or not self._pulses.acquire(timeout=0.05):
-            return None  # no pin pulse
+        if self.trigger != "software":  # the replay camera starts in "hardware"
+            time.sleep(0.01)
+            return None
         return super().grab(timeout_s)
 
 
+def _pulse(gpio):
+    """The pin passes the normally open switch on GPIO26."""
+    gpio.drive_low()
+    time.sleep(0.03)
+    gpio.drive_high()
+    time.sleep(0.03)
+
+
 @pytest.fixture
-def capture(cylinder_geometry, tmp_path):
-    """The capture station on a shared folder, with its local spool."""
+def capture(cylinder_geometry, tmp_path, gpio):
+    """The capture station on a shared folder, with its local spool and the
+    pin switch on (mock) GPIO26."""
     app = QApplication.instance() or QApplication([])
     run = cylinder_geometry[0]
     share, spool = tmp_path / "share", tmp_path / "spool"
     store = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
     win = MainWindow(PinCamera(run.folder), store, share=share, spool=spool)
+    win.pin = gpio
     yield app, win, run, share
     win.close()
 
@@ -70,12 +74,12 @@ def _record(app, win, run, run_id):
     tab.period.setValue(run.nominal_period_s)
     win.tabs.setCurrentWidget(tab)
     tab.reference_button.click()
-    win.camera.pulse()
+    _pulse(win.pin)
     _wait(app, tab.record_button.isEnabled)
     tab.record_button.click()
     frames = len(run.frames) - 1
     for _ in range(frames):
-        win.camera.pulse()
+        _pulse(win.pin)
     _wait(app, lambda: tab.recorder.frame_count == frames)
     tab.stop_button.click()
 
