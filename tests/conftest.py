@@ -19,6 +19,33 @@ def _load_with_geometry(name):
     return run, cal, geometry.compute(cal)
 
 
+@pytest.fixture
+def gpio():
+    """gpiozero mock pins in place of the Pi's GPIO: the GPIO26 mock pin."""
+    from gpiozero import Device
+    from gpiozero.pins.mock import MockFactory
+
+    from digital_thread import pin
+
+    old, Device.pin_factory = Device.pin_factory, MockFactory()
+    yield Device.pin_factory.pin(pin.GPIO_PIN)
+    Device.pin_factory.reset()
+    Device.pin_factory = old
+
+
+@pytest.fixture
+def no_gpio(monkeypatch):
+    """A computer without GPIO (as gpiozero reports it on Windows)."""
+    from gpiozero import Device
+    from gpiozero.exc import BadPinFactory
+
+    def no_factory():
+        raise BadPinFactory("Unable to load any default pin factory!")
+
+    monkeypatch.setattr(Device, "pin_factory", None)
+    monkeypatch.setattr(Device, "_default_pin_factory", staticmethod(no_factory))
+
+
 @pytest.fixture(scope="session")
 def cylinder_geometry():
     """Run, calibration and run geometry of the synthetic cylinder (computed once)."""

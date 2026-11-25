@@ -22,6 +22,7 @@ from PySide6.QtGui import QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -38,10 +39,12 @@ from PySide6.QtWidgets import (
 
 from digital_thread import calibration, conversion, dataset, preview, process
 from digital_thread.camera import BaslerCamera, ReplayCamera
+from digital_thread.pin import GpioPin
 from digital_thread.recorder import Recorder, RecordSettings
 from digital_thread.viewer import TowViewer
 
 TOUCH_FONT = 14
+PIN_INPUTS = {"gpio": "Pi GPIO26", "line": "Camera input line"}  # section 3
 PREVIEW_WIDTH = 1024  # displayed width of camera images (super-pixel image halved)
 
 
@@ -100,6 +103,21 @@ def to_pixmap(gray, colour=None):
     )
 
 
+def reported(method):
+    """Run a tab step; an error is shown in the tab's status line, not raised."""
+
+    takes = len(inspect.signature(method).parameters) - 1  # without self
+
+    @functools.wraps(method)
+    def step(self, *args):  # Qt may append a `checked` argument
+        try:
+            return method(self, *args[:takes])
+        except (ValueError, OSError, RuntimeError) as error:
+            self.status.setText(f"Error: {error}")
+
+    return step
+
+
 class Grabber(QThread):
     """Grabs frames in a worker thread and hands them to the GUI as signals.
 
@@ -112,14 +130,17 @@ class Grabber(QThread):
 
     frame = Signal(object, float, int)
 
-    def __init__(self, camera):
+    def __init__(self, camera, pin_input="gpio"):
         super().__init__()
         self.camera = camera
         self.lock = threading.Lock()  # camera calls from GUI and worker thread
         self.mode = "free"
+        self.pin_input = pin_input  # a key of PIN_INPUTS
         self.generation = 0
         self._pending = threading.Event()  # a free-run frame awaits the GUI
         self._running = True
+        self._gpio = None  # the GPIO pin while triggered through it
+        self.trigger_errors = 0  # pin pulses the camera could not take
 
     def run(self):
         while self._running:
@@ -140,17 +161,51 @@ class Grabber(QThread):
         return generation == self.generation
 
     def set_trigger(self, mode):
+        """ "free" (Preview) or "hardware" (one frame per pin pulse). The pin
+        reaches the camera through its input line, or through GPIO26 of the
+        Pi and a software trigger (`pin_input`)."""
         with self.lock:
             if mode == self.mode:
                 return  # keep frames already on their way
-            self.camera.set_trigger(mode)
+            gpio = mode == "hardware" and self.pin_input == "gpio"
+            self._close_gpio()  # no pulse reaches a camera being reconfigured
+            self.camera.set_trigger("software" if gpio else mode)
+            if gpio:
+                try:
+                    self._gpio = GpioPin(self._fire)
+                except RuntimeError:  # no GPIO: back to the previous mode
+                    self.camera.set_trigger(self.mode)
+                    raise
+                self.trigger_errors = 0
             self.mode = mode
             self.generation += 1
             self._pending.clear()
 
+    def set_pin_input(self, pin_input):
+        """Only between recordings; GPIO26 is checked right away."""
+        if self.mode == "hardware":
+            raise RuntimeError("stop the recording or marker capture first")
+        if pin_input == "gpio":
+            GpioPin(lambda: None).close()  # raises without GPIO
+        self.pin_input = pin_input
+
+    def _fire(self):
+        """A GPIO pin pulse (gpiozero's thread). Not under the lock: the grab
+        loop holds it while waiting for this very frame."""
+        try:
+            self.camera.software_trigger()
+        except Exception:  # noqa: BLE001 (thread boundary: counted, shown at Stop)
+            self.trigger_errors += 1
+
+    def _close_gpio(self):
+        if self._gpio is not None:
+            self._gpio.close()
+            self._gpio = None
+
     def stop(self):
         self._running = False
         self.wait(10000)
+        self._close_gpio()
 
 
 class PreviewTab(QWidget):
@@ -176,9 +231,18 @@ class PreviewTab(QWidget):
         self.save_location.textChanged.connect(
             lambda text: window.store.setValue("save_location", text)
         )
+        self.pin_input = QComboBox()
+        self.pin_input.setMinimumHeight(48)
+        for key, text in PIN_INPUTS.items():
+            self.pin_input.addItem(text, key)
+        self.pin_input.setCurrentIndex(
+            self.pin_input.findData(window.store.value("pin_input", "gpio"))
+        )
+        self.pin_input.currentIndexChanged.connect(self.choose_pin_input)
         form = QFormLayout()
         form.addRow("Exposure", self.exposure)
         form.addRow("Gain", self.gain)
+        form.addRow("Pin input", self.pin_input)
         form.addRow("Save location", save_row)
         form.addRow(self.show_edges)
         form.addRow(self.status)
@@ -188,6 +252,20 @@ class PreviewTab(QWidget):
         side.setLayout(form)
         layout.addWidget(side, stretch=1)
         self.frames = 0
+
+    def choose_pin_input(self, _index=None):
+        key = self.pin_input.currentData()
+        grabber = self.window.grabber
+        try:
+            grabber.set_pin_input(key)
+        except RuntimeError as error:
+            self.pin_input.blockSignals(True)  # back to the pin input in use
+            self.pin_input.setCurrentIndex(self.pin_input.findData(grabber.pin_input))
+            self.pin_input.blockSignals(False)
+            self.status.setText(f"Error: {error}")
+            return
+        self.window.store.setValue("pin_input", key)
+        self.status.setText(f"Pin input: {PIN_INPUTS[key]}")
 
     def show_frame(self, raw):
         s0 = conversion.convert(raw, self.window.camera.polar_pattern).s0
@@ -217,21 +295,6 @@ BOARD_POSITIONS = [
     "far from the camera, rotated about 20°",
     "left edge, tilted towards the centre",
 ]
-
-
-def reported(method):
-    """Run a tab step; an error is shown in the tab's status line, not raised."""
-
-    takes = len(inspect.signature(method).parameters) - 1  # without self
-
-    @functools.wraps(method)
-    def step(self, *args):  # Qt may append a `checked` argument
-        try:
-            return method(self, *args[:takes])
-        except (ValueError, OSError, RuntimeError) as error:
-            self.status.setText(f"Error: {error}")
-
-    return step
 
 
 def vector_fields(values):
@@ -331,12 +394,13 @@ class CalibrationTab(QWidget):
         layout.addWidget(self.canvas, stretch=2)
 
     # Images
+    @reported
     def _start_capture(self, kind):
-        self._capture = kind
         if kind == "markers":
+            self.window.set_trigger("hardware")  # fails here without the pin input
             self.session.marker_images = []
-            self.window.set_trigger("hardware")
             self.status.setText("Waiting for 5 pin pulses ...")
+        self._capture = kind
 
     def on_frame(self, raw, timestamp_s):
         showing = self.window.tabs.currentWidget() is self and self.live.isChecked()
@@ -596,7 +660,11 @@ class RecordTab(QWidget):
         )
         camera = self.window.camera
         self.recorder = Recorder(
-            folder, settings, cal, camera.polar_pattern, camera.settings()
+            folder,
+            settings,
+            cal,
+            camera.polar_pattern,
+            {**camera.settings(), "pin_input": self.window.grabber.pin_input},
         )
         self.window.set_trigger("hardware")
         self.recorder.capture_reference()
@@ -617,6 +685,9 @@ class RecordTab(QWidget):
         text = f"Stopped: {self.recorder.frame_count} frames in {self.recorder.folder}"
         if run.missed_revolutions:
             text += f"\nMissed revolutions: {run.missed_revolutions}"
+        failed = self.window.grabber.trigger_errors
+        if failed:
+            text += f"\nPin pulses the camera could not take: {failed}"
         self.status.setText(text)
         if self.auto_process.isChecked():
             self.window.process(self.recorder.folder)
@@ -702,7 +773,7 @@ class MainWindow(QMainWindow):
         ):
             self.tabs.addTab(widget, name)
         self.setCentralWidget(self.tabs)
-        self.grabber = Grabber(camera)
+        self.grabber = Grabber(camera, self.preview.pin_input.currentData())
         self.grabber.frame.connect(self.on_frame)
         self.grabber.start()
         self._processing = None
