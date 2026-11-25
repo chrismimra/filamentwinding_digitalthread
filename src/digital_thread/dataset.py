@@ -153,11 +153,17 @@ def write_json(path, data):
     path = Path(path)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    replace(tmp, path)
+
+
+def replace(tmp, path):
+    """Rename `tmp` to `path`, retrying while a sync client or virus scanner
+    briefly holds the file (Windows)."""
     for attempt in range(REPLACE_ATTEMPTS):
         try:
-            tmp.replace(path)
+            Path(tmp).replace(path)
             return
-        except PermissionError:  # briefly held by a sync client or virus scanner
+        except PermissionError:
             if attempt == REPLACE_ATTEMPTS - 1:
                 raise
             time.sleep(0.1)

@@ -5,16 +5,18 @@ temporary shared folder; the processing station works on the same folder, one
 `poll_once()` per call.
 """
 
+import json
 import shutil
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
-from digital_thread import dataset, stations
+from digital_thread import dataset, process, stations
 from digital_thread.app import MainWindow
 from digital_thread.camera import ReplayCamera
 from digital_thread.recorder import Recorder, RecordSettings
@@ -78,6 +80,12 @@ def _record(app, win, run, run_id):
     tab.stop_button.click()
 
 
+def _listed(win, run_id):
+    """The run's state in the Results tab, as the operator sees it."""
+    win.results.refresh()
+    return win.results.states().get(run_id)
+
+
 def test_a_recorded_run_is_processed_and_opened(capture, processed_committed):
     app, win, run, share = capture
     station = stations.ProcessingStation(share)
@@ -87,13 +95,11 @@ def test_a_recorded_run_is_processed_and_opened(capture, processed_committed):
     assert dataset.read_run(folder).calibration == "calibration"
     assert (folder / "calibration" / "calibration.json").exists()
 
-    win.results.refresh()
-    assert win.results.states()["shared_run"] == "waiting"
+    _wait(app, lambda: _listed(win, "shared_run") == "waiting")
     assert station.poll_once() == folder
     assert stations.job_state(folder) == "done"
 
-    win.results.refresh()
-    assert win.results.states()["shared_run"] == "done"
+    _wait(app, lambda: _listed(win, "shared_run") == "done")
     assert win.tabs.currentWidget() is win.results  # opened: recorded here
     assert win.results.viewer is not None
     rows = dataset.read_export(folder / dataset.EXPORT_FOLDER)[0]
@@ -200,13 +206,13 @@ def test_station_window_works_through_jobs(cylinder_geometry, tmp_path):
 
 
 def test_a_failed_run_shows_its_message_on_the_capture_station(capture):
-    _, win, run, share = capture
+    app, win, run, share = capture
     station = stations.ProcessingStation(share)
     folder = _shared_copy(run, share, "broken_run")
     (folder / run.tow_file).unlink()
     assert station.poll_once() == folder
     assert stations.job_state(folder) == "failed"
-    win.results.refresh()
+    _wait(app, lambda: _listed(win, "broken_run") == "failed")
     text = win.results.runs.item(0).text()
     assert text.startswith("broken_run: failed") and run.tow_file in text
 
@@ -218,3 +224,88 @@ def test_an_interrupted_job_is_redone_at_the_next_start(cylinder_geometry, tmp_p
     stations.write_status(folder, "working", progress=[1, 4])  # then it closed
     assert stations.ProcessingStation(share).poll_once() == folder
     assert stations.job_state(folder) == "done"
+
+
+IMAGES = Path(__file__).parents[1] / "demoData" / "synthetic" / "calibration_images"
+
+
+def test_calibration_is_solved_on_the_processing_station(capture, tmp_path):
+    _, win, _, share = capture
+    truth = json.loads((IMAGES / "truth.json").read_text(encoding="utf-8"))
+    station = stations.ProcessingStation(share)
+    tab = win.calibration
+
+    def solved():
+        assert station.poll_once() is not None
+        tab.poll_job()
+        return tab.status.text()
+
+    tab.load_images(IMAGES)
+    tab.calibrate_optics()
+    assert "Solving on the processing station" in tab.status.text()
+    assert "Optics from 12 images" in solved()
+    tab.mandrel.setText(str(IMAGES / truth["calibration"]))
+    tab.load_mandrel()
+    tab.marker_table.setText(str(IMAGES / truth["markers"]["table"]))
+    tab.camera_position[1].setValue(250)
+    tab.solve_position()
+    text = solved()
+    assert "Reprojection error per marker" in text and "Not on the mesh" not in text
+    assert "WARNING" not in text and "Body angle facing the camera" in text
+    tab.session.crop_polygon = np.array([[300, 500], [1700, 500], [1700, 1000]])
+    tab.touch_down.setValue(74)
+    bundle = share / stations.CALIBRATIONS / "installation"
+    tab.bundle_folder.setText(str(bundle))
+    tab.save()
+    cal = dataset.read_calibration(bundle)
+    assert cal.touch_down_deg == 74 and len(cal.crop_polygon) == 3
+    local = Path(win.record.calibration.text())
+    assert local != bundle and dataset.read_calibration(local).touch_down_deg == 74
+    banana = dataset.read_calibration(IMAGES / truth["calibration"])
+    np.testing.assert_allclose(cal.K, banana.K, rtol=0.005, atol=2.0)
+    centre = -banana.R.T @ banana.t
+    np.testing.assert_allclose(-cal.R.T @ cal.t, centre, atol=1.0)
+    source = dataset.read_run(IMAGES.parent / "banana" / "run")
+    run = tmp_path / "banana_run"  # reference and revolution 0 with the new bundle
+    run.mkdir()
+    shutil.copyfile(source.folder / source.tow_file, run / source.tow_file)
+    source.frames = source.frames[:2]
+    for frame in source.frames:
+        shutil.copyfile(source.folder / frame.file, run / frame.file)
+    source.calibration = str(bundle)
+    dataset.write_run(run, source)
+    rows, _ = dataset.read_export(process.process_run(run))
+    assert [r["revolution"] for r in rows] == [0]
+
+
+def test_a_failed_calibration_shows_its_message(capture):
+    _, win, _, share = capture
+    station = stations.ProcessingStation(share)
+    tab = win.calibration
+    tab.session.board_images = [np.zeros((1500, 2048), np.uint8)] * 3  # no board
+    tab.calibrate_optics()
+    station.poll_once()
+    tab.poll_job()
+    assert tab.status.text().startswith("Failed on the processing station:")
+
+
+def test_runs_left_in_the_spool_are_handed_over_at_the_next_start(
+    cylinder_geometry, tmp_path
+):
+    app = QApplication.instance() or QApplication([])
+    run, cal, _ = cylinder_geometry
+    share, spool = tmp_path / "share", tmp_path / "spool"
+    stations.ProcessingStation(share)
+    camera = ReplayCamera(run.folder)
+    settings = RecordSettings("left_over", run.calibration_folder, None, 6.35, 12.0)
+    rec = Recorder(spool / "left_over", settings, cal, camera.polar_pattern, {})
+    rec.capture_reference()
+    rec.on_frame(*camera.grab())  # then the app closed before the copy
+    store = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    win = MainWindow(ReplayCamera(run.folder), store, share=share, spool=spool)
+    try:
+        folder = share / stations.RUNS / "left_over"
+        _wait(app, lambda: stations.job_state(folder) == "waiting")
+        assert dataset.read_run(folder).frames[0].name == "reference"
+    finally:
+        win.close()

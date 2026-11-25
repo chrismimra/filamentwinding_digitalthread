@@ -21,9 +21,12 @@ heartbeat has *changed* within the last `OFFLINE_S` by the reader's clock.
 import json
 import shutil
 import time
+from datetime import datetime
 from pathlib import Path
 
-from digital_thread import dataset, process
+import numpy as np
+
+from digital_thread import calibration, dataset, process
 
 RUNS = "runs"
 CALIBRATIONS = "calibrations"
@@ -101,6 +104,9 @@ class Mirror:
         """Copy what changed; returns True once job.json is written."""
         if self.job_written:
             return True
+        if self.finished and (self.target / JOB_FILE).exists():
+            self.job_written = True  # handed over by an earlier session
+            return True
         if not self.source.exists():
             return False
         if not self.target.parent.is_dir():
@@ -110,12 +116,43 @@ class Mirror:
             target.parent.mkdir(parents=True, exist_ok=True)
             tmp = target.with_name(target.name + ".tmp")
             shutil.copyfile(path, tmp)
-            tmp.replace(target)
+            dataset.replace(tmp, target)
             self._copied[relative] = key
         if self.finished and not self._pending():
             dataset.write_json(self.target / JOB_FILE, {"kind": "run"})
             self.job_written = True
         return self.job_written
+
+
+def run_states(share):
+    """The runs in the share, newest first (run IDs start with the date):
+    dicts with name, state, progress and message."""
+    runs = Path(share) / RUNS
+    if not runs.is_dir():
+        return []
+    states = []
+    for folder in sorted((f for f in runs.iterdir() if f.is_dir()), reverse=True):
+        status = read_json(folder / STATUS_FILE) or {}
+        states.append(
+            {
+                "name": folder.name,
+                "state": job_state(folder),
+                "progress": status.get("progress"),
+                "message": status.get("message", ""),
+            }
+        )
+    return states
+
+
+def run_text(run):
+    """One line of the run list as the operator reads it."""
+    state = "processing" if run["state"] == "working" else run["state"]
+    text = f"{run['name']}: {state}"
+    if run["state"] == "working" and run["progress"]:
+        text += " {}/{}".format(*run["progress"])
+    if run["state"] == "failed":
+        text += f"\n{run['message']}"
+    return text
 
 
 def clean_spool(spool, share):
@@ -126,6 +163,141 @@ def clean_spool(spool, share):
     for folder in spool.iterdir():
         if folder.is_dir() and job_state(Path(share) / RUNS / folder.name) == "done":
             shutil.rmtree(folder, ignore_errors=True)
+
+
+# Calibration jobs. An optics job holds the board images; a position job holds
+# the intrinsics, the mandrel (STEP file or bundle), axis, marker table and
+# marker images. The processing station answers with `intrinsics.json`, or with
+# a solved bundle (`solved/`, pose and mesh, touch-down 0) and `pose.json`.
+INTRINSICS_FILE = "intrinsics.json"
+POSE_FILE = "pose.json"
+SOLVED_FOLDER = "solved"
+STEP_FILE = "mandrel.step"
+MANDREL_BUNDLE = "mandrel"
+
+
+def _job_folder(share, kind):
+    name = f"{datetime.now():%Y%m%d_%H%M%S_%f}_{kind}"
+    folder = Path(share) / CALIBRATIONS / name
+    if not folder.parent.is_dir():
+        raise ShareUnreachable(f"{folder.parent} is not reachable")
+    folder.mkdir()
+    return folder
+
+
+def _write_images(folder, prefix, images):
+    for i, image in enumerate(images):
+        dataset.write_image(folder / f"{prefix}_{i:02d}.png", image)
+
+
+def _read_images(folder, prefix):
+    return [dataset.read_image(f) for f in sorted(folder.glob(f"{prefix}_*.png"))]
+
+
+def _intrinsics_json(intrinsics):
+    return {
+        "K": np.asarray(intrinsics.K).tolist(),
+        "distortion": np.asarray(intrinsics.distortion).tolist(),
+        "rms_px": float(intrinsics.rms_px),
+        "used": int(intrinsics.used),
+    }
+
+
+def _intrinsics(data):
+    return calibration.Intrinsics(
+        np.array(data["K"]), np.array(data["distortion"]), data["rms_px"], data["used"]
+    )
+
+
+def submit_optics(share, board_images):
+    """An optics job with the board images; returns its folder."""
+    folder = _job_folder(share, "optics")
+    _write_images(folder, "board", board_images)
+    dataset.write_json(folder / JOB_FILE, {"kind": "optics"})
+    return folder
+
+
+def solve_optics(folder):
+    session = calibration.Session(board_images=_read_images(folder, "board"))
+    dataset.write_json(
+        folder / INTRINSICS_FILE, _intrinsics_json(session.calibrate_optics())
+    )
+
+
+def read_optics(folder):
+    return _intrinsics(read_json(Path(folder) / INTRINSICS_FILE))
+
+
+def submit_position(share, session, mandrel, axis_point, axis_dir):
+    """A position job from the Calibration tab's session; `mandrel` is a STEP
+    file or a bundle folder. Returns the job folder."""
+    session.require("intrinsics", "marker_table", "marker_images")
+    folder = _job_folder(share, "position")
+    mandrel = Path(mandrel)
+    if mandrel.is_dir():
+        for name in ("calibration.json", "mesh.npz"):
+            target = folder / MANDREL_BUNDLE / name
+            target.parent.mkdir(exist_ok=True)
+            shutil.copyfile(mandrel / name, target)
+    else:
+        shutil.copyfile(mandrel, folder / STEP_FILE)
+    shutil.copyfile(session.marker_table, folder / dataset.MARKER_TABLE_FILE)
+    _write_images(folder, "markers", session.marker_images)
+    dataset.write_json(folder / INTRINSICS_FILE, _intrinsics_json(session.intrinsics))
+    dataset.write_json(
+        folder / JOB_FILE,
+        {
+            "kind": "position",
+            "axis_point": [float(v) for v in axis_point],
+            "axis_dir": [float(v) for v in axis_dir],
+            "marker_size_mm": float(session.marker_size_mm),
+        },
+    )
+    return folder
+
+
+def solve_position(folder):
+    job = read_json(folder / JOB_FILE)
+    session = calibration.Session(
+        intrinsics=_intrinsics(read_json(folder / INTRINSICS_FILE)),
+        marker_table=folder / dataset.MARKER_TABLE_FILE,
+        marker_size_mm=job["marker_size_mm"],
+        marker_images=_read_images(folder, "markers"),
+    )
+    bundle = folder / MANDREL_BUNDLE
+    session.load_mandrel(
+        bundle if bundle.is_dir() else folder / STEP_FILE,
+        job["axis_point"],
+        job["axis_dir"],
+    )
+    pose = session.solve_position()
+    dataset.write_calibration(folder / SOLVED_FOLDER, session.calibration_so_far())
+    dataset.write_json(
+        folder / POSE_FILE,
+        {
+            "centre": np.asarray(pose.centre).tolist(),
+            "marker_errors_px": {str(k): v for k, v in pose.marker_errors_px.items()},
+            "rms_px": float(pose.rms_px),
+            "used": int(pose.used),
+        },
+    )
+
+
+def read_position(folder, session):
+    """Mesh, axis and pose of a solved position job into `session`."""
+    folder = Path(folder)
+    solved = dataset.read_calibration(folder / SOLVED_FOLDER)
+    session.load_mandrel(folder / SOLVED_FOLDER)
+    data = read_json(folder / POSE_FILE)
+    session.pose = calibration.Pose(
+        R=solved.R,
+        t=solved.t,
+        centre=np.array(data["centre"]),
+        marker_errors_px={int(k): v for k, v in data["marker_errors_px"].items()},
+        rms_px=data["rms_px"],
+        used=data["used"],
+    )
+    return session.pose
 
 
 class Heartbeat:
@@ -175,7 +347,8 @@ class ProcessingStation:
     def _jobs(self):
         jobs = [
             job.parent
-            for job in (self.share / RUNS).glob(f"*/{JOB_FILE}")
+            for kind in (RUNS, CALIBRATIONS)
+            for job in (self.share / kind).glob(f"*/{JOB_FILE}")
             if job_state(job.parent) not in FINISHED
         ]
         return sorted(jobs, key=lambda folder: (folder / JOB_FILE).stat().st_mtime)
@@ -186,16 +359,22 @@ class ProcessingStation:
         if not jobs:
             return None
         folder = jobs[0]
-        name = f"run {folder.name}"
-        self.log(f"Processing {name} ...")
+        kind = (read_json(folder / JOB_FILE) or {}).get("kind", "run")
+        name = f"{kind} {folder.name}"
+        self.log(f"Working on {name} ...")
         write_status(folder, "working")
         try:
-            process.process_run(
-                folder,
-                progress=lambda done, total: write_status(
-                    folder, "working", progress=[done, total]
-                ),
-            )
+            if kind == "optics":
+                solve_optics(folder)
+            elif kind == "position":
+                solve_position(folder)
+            else:
+                process.process_run(
+                    folder,
+                    progress=lambda done, total: write_status(
+                        folder, "working", progress=[done, total]
+                    ),
+                )
         except Exception as error:  # noqa: BLE001 (reported to the capture station)
             message = f"{type(error).__name__}: {error}"
             write_status(folder, "failed", message)

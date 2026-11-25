@@ -56,6 +56,8 @@ from digital_thread.viewer import TowViewer
 TOUCH_FONT = 14
 MIRROR_INTERVAL_S = 0.5  # how often new files are copied to the shared folder
 RESULTS_REFRESH_MS = 2000  # how often the Results tab reads the run states
+JOB_POLL_MS = 500  # how often the Calibration tab checks a pending job
+BANNER_REFRESH_MS = 500  # how often the offline banner is updated
 PREVIEW_WIDTH = 1024  # displayed width of camera images (super-pixel image halved)
 
 
@@ -276,6 +278,9 @@ class CalibrationTab(QWidget):
         self.session = calibration.Session()
         self._capture = None  # "board" (next frame) or "markers" (next 5 pulses)
         self._shown = None  # kind of the image on the canvas
+        self._job = None  # capture role: (kind, folder) of the pending job
+        self.job_timer = QTimer(self)
+        self.job_timer.timeout.connect(self.poll_job)
 
         self.board_button = touch_button("Capture board image")
         self.board_button.clicked.connect(lambda: self._start_capture("board"))
@@ -303,6 +308,14 @@ class CalibrationTab(QWidget):
         clear_polygon.setMinimumHeight(48)
         clear_polygon.clicked.connect(self.clear_polygon)
         bundle_row, self.bundle_folder = path_field("Calibration bundle folder")
+        if window.share is not None:
+            self.bundle_folder.setText(
+                str(
+                    window.share
+                    / stations.CALIBRATIONS
+                    / f"bundle_{datetime.now():%Y%m%d}"
+                )
+            )
         self.save_button = touch_button("Save calibration bundle")
         self.save_button.clicked.connect(self.save)
         self.status = QLabel()
@@ -445,12 +458,49 @@ class CalibrationTab(QWidget):
     # Steps
     @reported
     def calibrate_optics(self):
-        result = self.session.calibrate_optics()
+        if self.window.share is not None:
+            if not self.session.board_images:
+                raise ValueError("capture or load the board images first")
+            self._submit(
+                "optics",
+                stations.submit_optics(self.window.share, self.session.board_images),
+            )
+            return
+        self._show_optics(self.session.calibrate_optics())
+
+    def _show_optics(self, result):
         self.status.setText(
             f"Optics from {result.used} images: f = {result.K[0, 0]:.1f} px, "
             f"principal point ({result.K[0, 2]:.1f}, {result.K[1, 2]:.1f}), "
             f"k1 = {result.distortion[0]:.4f}, reprojection error {result.rms_px:.2f} px"
         )
+
+    def _submit(self, kind, folder):
+        """Capture role: a calibration job, solved on the processing station."""
+        self._job = (kind, folder)
+        self.status.setText("Solving on the processing station ...")
+        self.job_timer.start(JOB_POLL_MS)
+
+    @reported
+    def poll_job(self):
+        """Capture role: show the result once the processing station is done."""
+        if self._job is None:
+            return
+        kind, folder = self._job
+        state = stations.job_state(folder)
+        if state not in stations.FINISHED:
+            return
+        self._job = None
+        self.job_timer.stop()
+        if state == "failed":
+            message = stations.read_json(folder / stations.STATUS_FILE)["message"]
+            self.status.setText(f"Failed on the processing station: {message}")
+        elif kind == "optics":
+            self.session.intrinsics = stations.read_optics(folder)
+            self._show_optics(self.session.intrinsics)
+        else:
+            stations.read_position(folder, self.session)
+            self._show_position()
 
     @reported
     def load_mandrel(self):
@@ -461,6 +511,11 @@ class CalibrationTab(QWidget):
                 box.setValue(v)
             for box, v in zip(self.axis_dir, self.session.axis_dir, strict=True):
                 box.setValue(v)
+        elif self.window.share is not None:  # gmsh runs on the processing station
+            if not source.is_file():
+                raise ValueError(f"{source} is not a file")
+            self.status.setText("The mesh is made on the processing station.")
+            return
         else:
             point = [box.value() for box in self.axis_point]
             direction = [box.value() for box in self.axis_dir]
@@ -472,11 +527,27 @@ class CalibrationTab(QWidget):
         session = self.session
         session.marker_table = Path(self.marker_table.text())
         session.marker_size_mm = self.marker_size.value()
+        if self.window.share is not None:
+            self._submit(
+                "position",
+                stations.submit_position(
+                    self.window.share,
+                    session,
+                    self.mandrel.text(),
+                    [box.value() for box in self.axis_point],
+                    [box.value() for box in self.axis_dir],
+                ),
+            )
+            return
+        session.solve_position()
+        self._show_position()
+
+    def _show_position(self):
+        session, pose = self.session, self.session.pose
         lines = []
         off = session.markers_off_mesh()
         if off:
             lines.append(f"Not on the mesh (ignored): markers {off}")
-        pose = session.solve_position()
         errors = ", ".join(f"{i}: {e:.2f}" for i, e in pose.marker_errors_px.items())
         lines.append(f"Reprojection error per marker [px]: {errors}")
         centre = ", ".join(f"{c:.1f}" for c in pose.centre)
@@ -519,10 +590,15 @@ class CalibrationTab(QWidget):
     @reported
     def save(self):
         self.session.touch_down_deg = self.touch_down.value()
-        self.session.save(self.bundle_folder.text())
-        self.status.setText(
-            f"Calibration bundle written to {self.bundle_folder.text()}"
-        )
+        folder = Path(self.bundle_folder.text())
+        self.session.save(folder)
+        text = f"Calibration bundle written to {folder}"
+        if self.window.share is not None:  # a local copy, so recording needs no share
+            local = self.window.spool.parent / stations.CALIBRATIONS / folder.name
+            self.session.save(local)
+            self.window.record.calibration.setText(str(local))
+            text += f"\nLocal copy for recording: {local}"
+        self.status.setText(text)
 
 
 class RecordTab(QWidget):
@@ -701,37 +777,26 @@ class ResultsTab(QWidget):
         """Run ID -> job state, as last read from the shared folder."""
         return dict(self._states)
 
+    @reported
     def refresh(self):
-        """Read the run states; open a run of this session once it is done."""
-        stations.clean_spool(self.window.spool, self.window.share)
-        runs = self.window.share / stations.RUNS
-        folders = sorted(
-            (f for f in runs.iterdir() if f.is_dir()) if runs.exists() else [],
-            key=lambda f: f.name,
-            reverse=True,  # newest first: run IDs start with the date
-        )
-        old, self._states = self._states, {}
+        """Show the run states last read by the mirror thread (the GUI never
+        reads the share itself); open a run of this session once it is done."""
+        runs = self.window.mirror_thread.runs
+        old = self._states
+        self._states = {run["name"]: run["state"] for run in runs}
         self.runs.clear()
-        for folder in folders:
-            state = stations.job_state(folder)
-            self._states[folder.name] = state
-            text = f"{folder.name}: {state}"
-            status = stations.read_json(folder / stations.STATUS_FILE) or {}
-            if state == "working" and status.get("progress"):
-                text += " {}/{}".format(*status["progress"])
-            if state == "failed":
-                text += f"\n{status.get('message', '')}"
-            self.runs.addItem(text)
+        for run in runs:
+            self.runs.addItem(stations.run_text(run))
         for name, state in self._states.items():
             fresh = state == "done" and old.get(name, "") != "done"
             if fresh and name in self.window.recorded_here:
-                self.open(runs / name)
+                self.open(self.window.shared_run(name))
                 self.window.tabs.setCurrentWidget(self)
 
     def open_item(self, item):
         name = item.text().split(": ")[0]
         if self._states.get(name) == "done":
-            self.open(self.window.share / stations.RUNS / name)
+            self.open(self.window.shared_run(name))
 
     def open(self, run_folder, out_folder=None):
         self.run_folder.setText(str(run_folder))
@@ -759,19 +824,26 @@ class MirrorThread(QThread):
     """Copies the spooled runs to the shared folder in the background, and
     keeps the heartbeats, so the GUI never waits for the network."""
 
-    def __init__(self, share):
+    def __init__(self, share, spool):
         super().__init__()
+        self.share, self.spool = share, spool
+        # The GUI appends, this thread removes: list operations are atomic.
         self.mirrors = []
         self._stop = threading.Event()
         self.processing_alive = False
-        if share is not None:
-            self.heartbeat = stations.Heartbeat(share, stations.CAPTURE_HEARTBEAT)
-            self.watch = stations.Watch(share, stations.PROCESSING_HEARTBEAT)
+        self.runs = []  # the run list, newest first (stations.run_states)
+        self.heartbeat = stations.Heartbeat(share, stations.CAPTURE_HEARTBEAT)
+        self.watch = stations.Watch(share, stations.PROCESSING_HEARTBEAT)
 
     def run(self):
         last_beat = 0.0
         while not self._stop.is_set():
             self.processing_alive = self.watch.alive()
+            try:
+                self.runs = stations.run_states(self.share)
+                stations.clean_spool(self.spool, self.share)
+            except OSError:
+                pass  # share unreachable: keep the last run list
             if time.monotonic() - last_beat >= stations.HEARTBEAT_S:
                 try:
                     if self.heartbeat.path.parent.is_dir():
@@ -809,7 +881,9 @@ class MainWindow(QMainWindow):
         self.spool = Path(spool) if spool is not None else default_spool()
         self.recorded_here = set()  # run IDs recorded in this session
         self._mirrors = {}
-        self.mirror_thread = MirrorThread(self.share)
+        self.mirror_thread = None
+        if self.share is not None:
+            self.mirror_thread = MirrorThread(self.share, self.spool)
         self.offline_banner = QLabel(
             "Processing station offline: capture works, jobs wait until it is started."
         )
@@ -820,7 +894,8 @@ class MainWindow(QMainWindow):
             self.mirror_thread.start()
             self.banner_timer = QTimer(self)
             self.banner_timer.timeout.connect(self.show_liveness)
-            self.banner_timer.start(500)
+            self.banner_timer.start(BANNER_REFRESH_MS)
+            self.resume_spooled_runs()
         self.tabs = QTabWidget()
         self.preview = PreviewTab(self)
         self.calibration = CalibrationTab(self)
@@ -881,14 +956,26 @@ class MainWindow(QMainWindow):
         """The run's folder in the shared folder (None without the capture role)."""
         return None if self.share is None else self.share / stations.RUNS / run_id
 
-    def mirror(self, spool_folder):
-        """Start copying a spooled run to the shared folder."""
-        if self.share is None:
+    def mirror(self, spool_folder, recorded_here=True):
+        """Start copying a spooled run to the shared folder (once per run: a new
+        reference in the same run keeps its mirror)."""
+        if self.share is None or spool_folder.name in self._mirrors:
             return
         mirror = stations.Mirror(spool_folder, self.shared_run(spool_folder.name))
         self._mirrors[spool_folder.name] = mirror
         self.mirror_thread.mirrors.append(mirror)
-        self.recorded_here.add(spool_folder.name)
+        if recorded_here:
+            self.recorded_here.add(spool_folder.name)
+
+    def resume_spooled_runs(self):
+        """Runs left in the spool by an earlier session (closed during an
+        outage, or before the copy was complete) are finished and handed over."""
+        if not self.spool.is_dir():
+            return
+        for folder in sorted(self.spool.iterdir()):
+            if (folder / "run.json").exists():
+                self.mirror(folder, recorded_here=False)
+                self.hand_over(folder)
 
     def hand_over(self, spool_folder):
         """After Stop: the run becomes a job once every file is copied."""
@@ -909,7 +996,8 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentWidget(self.results)
 
     def closeEvent(self, event):
-        self.mirror_thread.stop()
+        if self.mirror_thread is not None:
+            self.mirror_thread.stop()
         self.grabber.stop()
         self.camera.close()
         super().closeEvent(event)

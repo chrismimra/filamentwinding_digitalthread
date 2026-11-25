@@ -281,16 +281,16 @@ class Session:
         self.intrinsics = intrinsic(self.board_images)
         return self.intrinsics
 
-    def _require(self, *names):
+    def require(self, *names):
         for name in names:
             if getattr(self, name) is None or (
                 isinstance(getattr(self, name), list) and not getattr(self, name)
             ):
                 raise ValueError(_MISSING_STEP[name])
 
-    def _calibration(self):
+    def calibration_so_far(self):
         """Calibration from the steps done so far (pose: identity until solved)."""
-        self._require("intrinsics", "mesh")
+        self.require("intrinsics", "mesh")
         image = (self.marker_images or self.board_images or [None])[0]
         if image is None:
             raise ValueError("no calibration images yet")
@@ -312,14 +312,14 @@ class Session:
 
     def markers_off_mesh(self):
         """IDs of table markers further than MAX_OFF_MESH_MM from the mesh."""
-        self._require("marker_table")
+        self.require("marker_table")
         ids, centres = dataset.read_markers(self.marker_table)
-        _, _, distance = surface_points(self._calibration(), centres)
+        _, _, distance = surface_points(self.calibration_so_far(), centres)
         return [int(i) for i in ids[distance > MAX_OFF_MESH_MM]]
 
     def solve_position(self):
-        self._require("marker_table", "marker_images")
-        cal = self._calibration()
+        self.require("marker_table", "marker_images")
+        cal = self.calibration_so_far()
         ids, centres = dataset.read_markers(self.marker_table)
         used = surface_points(cal, centres)[2] <= MAX_OFF_MESH_MM
         corners = marker_corners(cal, centres[used], self.marker_size_mm)
@@ -329,12 +329,12 @@ class Session:
         return self.pose
 
     def body_angle_guide(self):
-        self._require("pose")
-        return body_angle_facing(self._calibration())
+        self.require("pose")
+        return body_angle_facing(self.calibration_so_far())
 
     def bundle(self) -> Calibration:
-        self._require("pose", "touch_down_deg")
-        cal = self._calibration()
+        self.require("pose", "touch_down_deg")
+        cal = self.calibration_so_far()
         cal.touch_down_deg = float(self.touch_down_deg)
         cal.crop_polygon = self.crop_polygon
         cal.marker_size_mm = self.marker_size_mm
