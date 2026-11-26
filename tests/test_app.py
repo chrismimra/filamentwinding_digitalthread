@@ -152,3 +152,45 @@ def test_the_pin_input_cannot_change_during_a_recording(window, tmp_path):
     assert choice.currentData() == "line" and win.grabber.mode == "hardware"
     tab.stop_button.setEnabled(True)
     tab.stop_button.click()
+
+
+class LosingCamera(ReplayCamera):
+    """A replay camera that can drop off the USB bus (`gone = True`)."""
+
+    gone = False
+
+    def grab(self, timeout_s=1.0):
+        if self.gone:
+            raise RuntimeError("Device has been removed from the PC.")
+        return super().grab(timeout_s)
+
+
+@pytest.fixture
+def losing_window(cylinder_geometry, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    run = cylinder_geometry[0]
+    store = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    store.setValue("pin_input", "line")  # this computer has no GPIO
+    camera = LosingCamera(run.folder, loop=True)
+    win = MainWindow(camera, store)
+    yield app, win, run, camera
+    win.close()
+
+
+def test_a_lost_camera_shows_a_banner(losing_window):
+    app, win, _, camera = losing_window
+    camera.gone = True
+    _wait(app, lambda: not win.camera_banner.isHidden())
+    assert "Camera lost" in win.camera_banner.text()
+    assert "Device has been removed" in win.camera_banner.text()
+
+
+def test_a_lost_camera_ends_the_recording(losing_window, tmp_path):
+    app, win, run, camera = losing_window
+    tab = _start_reference(app, win, run, tmp_path, "lost_run")
+    _wait(app, lambda: tab.recorder.state == "ready")
+    tab.record_button.click()
+    camera.gone = True
+    _wait(app, lambda: not tab.active())
+    assert "Camera lost: the recording broke off" in tab.status.text()
+    assert tab.recorder.folder.exists()
