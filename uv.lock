@@ -356,7 +356,7 @@ name = "digital-thread-integration"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "gmsh" },
+    { name = "gmsh", marker = "platform_machine != 'aarch64'" },
     { name = "gpiozero" },
     { name = "ipykernel" },
     { name = "jupyter" },
@@ -378,7 +378,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "gmsh", specifier = ">=4.15.2" },
+    { name = "gmsh", marker = "platform_machine != 'aarch64'", specifier = ">=4.15.2" },
     { name = "gpiozero", specifier = ">=2.0" },
     { name = "ipykernel" },
     { name = "jupyter" },

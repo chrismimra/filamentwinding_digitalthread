@@ -3,6 +3,9 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
+
+pytest.importorskip("gmsh", reason="gmsh runs on the processing station only")
 
 from digital_thread.step_import import step_to_mesh
 
