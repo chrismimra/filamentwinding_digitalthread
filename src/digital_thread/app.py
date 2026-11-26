@@ -60,7 +60,7 @@ MIRROR_INTERVAL_S = 0.5  # how often new files are copied to the shared folder
 RESULTS_REFRESH_MS = 2000  # how often the Results tab reads the run states
 JOB_POLL_MS = 500  # how often the Calibration tab checks a pending job
 BANNER_REFRESH_MS = 500  # how often the offline banner is updated
-PIN_INPUTS = {"gpio": "Pi GPIO2", "line": "Camera input line"}  # section 3
+PIN_INPUTS = {"gpio": "Pi GPIO27", "line": "Camera input line"}  # section 3
 PREVIEW_WIDTH = 1024  # displayed width of camera images (super-pixel image halved)
 
 
@@ -178,7 +178,7 @@ class Grabber(QThread):
 
     def set_trigger(self, mode):
         """ "free" (Preview) or "hardware" (one frame per pin pulse). The pin
-        reaches the camera through its input line, or through GPIO2 of the
+        reaches the camera through its input line, or through GPIO27 of the
         Pi and a software trigger (`pin_input`)."""
         with self.lock:
             if mode == self.mode:
@@ -198,7 +198,7 @@ class Grabber(QThread):
             self._pending.clear()
 
     def set_pin_input(self, pin_input):
-        """Only between recordings; GPIO2 is checked right away."""
+        """Only between recordings; GPIO27 is checked right away."""
         if self.mode == "hardware":
             raise RuntimeError("stop the recording or marker capture first")
         if pin_input == "gpio":
