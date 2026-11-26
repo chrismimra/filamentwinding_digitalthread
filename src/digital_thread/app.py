@@ -145,6 +145,7 @@ class Grabber(QThread):
     """
 
     frame = Signal(object, float, int)
+    lost = Signal(str)  # the camera is gone (USB unplugged, no power)
 
     def __init__(self, camera, pin_input="gpio"):
         super().__init__()
@@ -157,11 +158,18 @@ class Grabber(QThread):
         self._running = True
         self._gpio = None  # the GPIO pin while triggered through it
         self.trigger_errors = 0  # pin pulses the camera could not take
+        self.lost_message = None  # why the camera was lost, once it is
 
     def run(self):
         while self._running:
             with self.lock:
-                grab = self.camera.grab(timeout_s=0.2)
+                try:
+                    grab = self.camera.grab(timeout_s=0.2)
+                except Exception as error:  # noqa: BLE001 (pylon errors: the camera is gone)
+                    self.lost_message = str(error)
+                    self._running = False
+                    self.lost.emit(self.lost_message)
+                    return
                 generation, mode = self.generation, self.mode
             if grab is None:
                 self.msleep(20)
@@ -181,8 +189,8 @@ class Grabber(QThread):
         reaches the camera through its input line, or through GPIO27 of the
         Pi and a software trigger (`pin_input`)."""
         with self.lock:
-            if mode == self.mode:
-                return  # keep frames already on their way
+            if mode == self.mode or self.lost_message:
+                return  # keep frames already on their way; or no camera left
             gpio = mode == "hardware" and self.pin_input == "gpio"
             self._close_gpio()  # no pulse reaches a camera being reconfigured
             self.camera.set_trigger("software" if gpio else mode)
@@ -982,14 +990,21 @@ class MainWindow(QMainWindow):
         self.close_button = QPushButton("Close")  # the touchscreen has no title bar
         self.close_button.clicked.connect(self.close)
         self.tabs.setCornerWidget(self.close_button)
+        self.camera_banner = QLabel()
+        self.camera_banner.setStyleSheet("background: #c62828; color: white;")
+        self.camera_banner.setMinimumHeight(40)
+        self.camera_banner.setWordWrap(True)
+        self.camera_banner.hide()
         central = QWidget()
         column = QVBoxLayout(central)
         column.setContentsMargins(0, 0, 0, 0)
+        column.addWidget(self.camera_banner)
         column.addWidget(self.offline_banner)
         column.addWidget(self.tabs, stretch=1)
         self.setCentralWidget(central)
         self.grabber = Grabber(camera, self.preview.pin_input.currentData())
         self.grabber.frame.connect(self.on_frame)
+        self.grabber.lost.connect(self.camera_lost)
         self.grabber.start()
         self._processing = None
 
@@ -1006,6 +1021,18 @@ class MainWindow(QMainWindow):
             self.calibration.on_frame(raw, timestamp_s)
         finally:
             self.grabber.handled()
+
+    def camera_lost(self, message):
+        self.camera_banner.setText(
+            "Camera lost: check the USB cable and the power supply, then restart "
+            f"the app. ({message})"
+        )
+        self.camera_banner.show()
+        if self.record.active():
+            self.record.stop()
+            self.record.status.setText(
+                "Camera lost: the recording broke off.\n" + self.record.status.text()
+            )
 
     def set_trigger(self, mode):
         self.grabber.set_trigger(mode)
@@ -1077,7 +1104,8 @@ class MainWindow(QMainWindow):
         if self.mirror_thread is not None:
             self.mirror_thread.stop()
         self.grabber.stop()
-        self.camera.close()
+        if self.grabber.lost_message is None:  # a lost camera cannot be closed
+            self.camera.close()
         super().closeEvent(event)
 
 
