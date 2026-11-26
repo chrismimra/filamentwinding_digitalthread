@@ -152,3 +152,26 @@ def test_the_pin_input_cannot_change_during_a_recording(window, tmp_path):
     assert choice.currentData() == "line" and win.grabber.mode == "hardware"
     tab.stop_button.setEnabled(True)
     tab.stop_button.click()
+
+
+def test_close_button_closes_the_app(window):
+    app, win, _ = window
+    win.show()
+    win.close_button.click()
+    app.processEvents()
+    assert not win.isVisible()
+
+
+def test_close_button_refuses_during_a_recording(window, tmp_path, monkeypatch):
+    app, win, run = window
+    warnings = []
+    monkeypatch.setattr(
+        "digital_thread.app.QMessageBox.warning", lambda *a: warnings.append(a[2])
+    )
+    win.show()
+    tab = _start_reference(app, win, run, tmp_path, "close_run")
+    _wait(app, tab.active)
+    win.close_button.click()
+    app.processEvents()
+    assert win.isVisible() and "Stop the recording" in warnings[0]
+    tab.stop()

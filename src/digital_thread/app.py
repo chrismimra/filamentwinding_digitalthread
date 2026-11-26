@@ -979,6 +979,9 @@ class MainWindow(QMainWindow):
             (self.results, "Results"),
         ):
             self.tabs.addTab(widget, name)
+        self.close_button = QPushButton("Close")  # the touchscreen has no title bar
+        self.close_button.clicked.connect(self.close)
+        self.tabs.setCornerWidget(self.close_button)
         central = QWidget()
         column = QVBoxLayout(central)
         column.setContentsMargins(0, 0, 0, 0)
@@ -1067,6 +1070,10 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentWidget(self.results)
 
     def closeEvent(self, event):
+        if self.record.active():
+            QMessageBox.warning(self, "Close", "Stop the recording first.")
+            event.ignore()
+            return
         if self.mirror_thread is not None:
             self.mirror_thread.stop()
         self.grabber.stop()
