@@ -1,9 +1,9 @@
 """Pin input on the Raspberry Pi (production, section 3).
 
 A normally open mechanical switch, pressed by the pin on the mandrel shaft,
-connects GPIO2 (physical pin 3) to GND (pin 6); the pull-ups (the Pi's
-internal one, and the 1.8 kOhm one on the board, as GPIO2 is the I2C data line)
-hold the input high while the contact is open. I2C must stay disabled. Each closing of the contact is one pin pulse, which fires
+connects GPIO27 (physical pin 13) to GND (pin 14); the Pi's internal pull-up
+holds the input high while the contact is open. Each closing of the contact is
+one pin pulse, which fires
 the camera by software trigger (the frame's timestamp still comes from the
 camera clock).
 
@@ -15,7 +15,7 @@ pin) gives no further pulses.
 
 import time
 
-GPIO_PIN = 2  # physical pin 3 (GPIO26 drives the fan)
+GPIO_PIN = 27  # physical pin 13 (GPIO26 drives the fan)
 DEBOUNCE_S = 0.02
 
 
