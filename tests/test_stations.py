@@ -45,9 +45,9 @@ class PinCamera(ReplayCamera):
 
 def _pulse(gpio):
     """The pin passes the normally open switch on GPIO27."""
-    gpio.drive_low()
-    time.sleep(0.1)  # well above the debounce, also on a busy machine
     gpio.drive_high()
+    time.sleep(0.1)  # well above the debounce, also on a busy machine
+    gpio.drive_low()
     time.sleep(0.1)  # well above the debounce, also on a busy machine
 
 
