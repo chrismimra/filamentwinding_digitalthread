@@ -200,12 +200,19 @@ def _intrinsics_json(intrinsics):
         "distortion": np.asarray(intrinsics.distortion).tolist(),
         "rms_px": float(intrinsics.rms_px),
         "used": int(intrinsics.used),
+        "focal_from_lens": bool(intrinsics.focal_from_lens),
+        "centre_fixed": bool(intrinsics.centre_fixed),
     }
 
 
 def _intrinsics(data):
     return calibration.Intrinsics(
-        np.array(data["K"]), np.array(data["distortion"]), data["rms_px"], data["used"]
+        np.array(data["K"]),
+        np.array(data["distortion"]),
+        data["rms_px"],
+        data["used"],
+        data.get("focal_from_lens", False),
+        data.get("centre_fixed", False),
     )
 
 

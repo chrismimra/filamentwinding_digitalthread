@@ -247,7 +247,7 @@ def test_calibration_is_solved_on_the_processing_station(capture, tmp_path):
     tab.load_images(IMAGES)
     tab.calibrate_optics()
     assert "Solving on the processing station" in tab.status.text()
-    assert "Optics from 12 images" in solved()
+    assert "Optics from 7 images" in solved()
     tab.mandrel.setText(str(IMAGES / truth["calibration"]))
     tab.load_mandrel()
     tab.marker_table.setText(str(IMAGES / truth["markers"]["table"]))

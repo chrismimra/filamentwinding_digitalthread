@@ -309,18 +309,13 @@ class PreviewTab(QWidget):
 
 # Guidance for the 12 board positions of the intrinsic calibration.
 BOARD_POSITIONS = [
-    "board in the centre, facing the camera",
-    "top left corner of the image",
-    "top right corner",
-    "bottom left corner",
-    "bottom right corner",
-    "centre, tilted left (about 30°)",
-    "centre, tilted right",
-    "centre, tilted up",
-    "centre, tilted down",
-    "close to the camera, filling the image",
-    "far from the camera, rotated about 20°",
-    "left edge, tilted towards the centre",
+    "board facing the camera, filling most of the image (baseline)",
+    "tilted left (about 30°); part of the board may leave the image",
+    "tilted right",
+    "tilted up",
+    "tilted down",
+    "rotated about 20° in the image, tilted",
+    "closer to the camera, tilted",
 ]
 
 
@@ -541,11 +536,23 @@ class CalibrationTab(QWidget):
         self._show_optics(self.session.calibrate_optics())
 
     def _show_optics(self, result):
-        self.status.setText(
+        text = (
             f"Optics from {result.used} images: f = {result.K[0, 0]:.1f} px, "
             f"principal point ({result.K[0, 2]:.1f}, {result.K[1, 2]:.1f}), "
-            f"k1 = {result.distortion[0]:.4f}, reprojection error {result.rms_px:.2f} px"
+            f"k1 = {result.distortion[0]:.4f}, k2 = {result.distortion[1]:.4f}, "
+            f"reprojection error {result.rms_px:.2f} px"
         )
+        if result.focal_from_lens:
+            text += (
+                f"\nf is the nominal {calibration.LENS_FOCAL_MM:g} mm of the lens: "
+                "add tilted images to fit it"
+            )
+        elif result.centre_fixed:
+            text += (
+                "\nPrincipal point fixed at the image centre (fewer than "
+                f"{calibration.FREE_CENTRE_IMAGES} images)"
+            )
+        self.status.setText(text)
 
     def _submit(self, kind, folder):
         """Capture role: a calibration job, solved on the processing station."""
