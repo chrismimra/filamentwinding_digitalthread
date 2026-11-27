@@ -20,19 +20,19 @@ def test_each_closing_of_the_switch_is_one_pulse(gpio):
     switch = pin.GpioPin(lambda: pulses.append(1))
     try:
         for _ in range(3):  # contact chatter as the pin presses the switch
-            gpio.drive_low()
-            gpio.drive_high()
-        gpio.drive_low()
-        assert len(pulses) == 1
-        _settle()  # the pin rests on the switch: no further pulse
-        assert len(pulses) == 1
-        for _ in range(3):  # chatter as the pin leaves the switch
             gpio.drive_high()
             gpio.drive_low()
         gpio.drive_high()
         assert len(pulses) == 1
+        _settle()  # the pin rests on the switch: no further pulse
+        assert len(pulses) == 1
+        for _ in range(3):  # chatter as the pin leaves the switch
+            gpio.drive_low()
+            gpio.drive_high()
+        gpio.drive_low()
+        assert len(pulses) == 1
         _settle()
-        gpio.drive_low()  # the next revolution
+        gpio.drive_high()  # the next revolution
         assert len(pulses) == 2
     finally:
         switch.close()
