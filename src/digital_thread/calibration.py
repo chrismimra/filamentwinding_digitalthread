@@ -98,43 +98,94 @@ class Intrinsics:
     distortion: np.ndarray  # OpenCV order (k1, k2, p1, p2, k3)
     rms_px: float  # reprojection error
     used: int  # images in which the board was found
+    focal_from_lens: bool = False  # one image: f is the lens's nominal value
+    centre_fixed: bool = False  # fewer than FREE_CENTRE_IMAGES: centre of the image
 
+
+# ChArUco board (A3, tools/print_board.py): 10 x 7 tiles of 40 mm, markers of
+# 30 mm. Every corner is identified by its markers, so a board partly outside
+# the image or partly out of focus still counts. Its own dictionary keeps the
+# board apart from the mandrel markers (DICT_4X4_50).
+BOARD_TILES = (10, 7)
+BOARD_TILE_MM = 40.0
+BOARD_MARKER_MM = 30.0
+BOARD = cv2.aruco.CharucoBoard(
+    BOARD_TILES,
+    BOARD_TILE_MM,
+    BOARD_MARKER_MM,
+    cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_50),
+)
+MIN_BOARD_SPAN = 4  # a valid view: inner corners spanning >= 4 x 4 (16 corners)
+LENS_FOCAL_MM = 25.0  # nominal focal length of the lens
+SUPER_PIXEL_MM = 2 * 0.00345  # 2 x 2 pixels of 3.45 um (acA4112-30umPOL)
+NOMINAL_FOCAL_PX = LENS_FOCAL_MM / SUPER_PIXEL_MM
+FREE_CENTRE_IMAGES = 5  # from this many images on, the image centre is fitted
 
 LIVE_SCALE = 2  # live board check on an image reduced by this factor (speed)
 
 
-def find_board(image, inner_corners=(9, 6)):
-    """Quick check for the live view: inner board corners (n, 2) in full-image
-    pixels, or None if the whole board is not found."""
+def detect_board(image):
+    """Identified inner corners of the ChArUco board: (corners (n, 2) in pixels,
+    ids (n,)), or None unless they span at least MIN_BOARD_SPAN x MIN_BOARD_SPAN."""
+    corners, ids, _, _ = cv2.aruco.CharucoDetector(BOARD).detectBoard(image)
+    if ids is None:
+        return None
+    ids = ids.ravel()
+    cols = BOARD_TILES[0] - 1
+    if min(len(np.unique(ids % cols)), len(np.unique(ids // cols))) < MIN_BOARD_SPAN:
+        return None
+    return corners.reshape(-1, 2), ids
+
+
+def find_board(image):
+    """Quick check for the live view: identified board corners (n, 2) in
+    full-image pixels, or None if too little of the board is found."""
     small = np.ascontiguousarray(image[::LIVE_SCALE, ::LIVE_SCALE])
-    found, corners = cv2.findChessboardCorners(
-        small, inner_corners, flags=cv2.CALIB_CB_FAST_CHECK
-    )
-    return corners.reshape(-1, 2) * LIVE_SCALE if found else None
+    found = detect_board(small)
+    return None if found is None else found[0] * LIVE_SCALE
 
 
-def intrinsic(images, inner_corners=(9, 6), tile_mm=40.0) -> Intrinsics:
-    """Intrinsics of the super-pixel image from 8-bit S0 checkerboard images."""
-    cols, rows = inner_corners
-    board = np.zeros((cols * rows, 3), np.float32)
-    board[:, :2] = np.mgrid[:cols, :rows].T.reshape(-1, 2) * tile_mm
+def intrinsic(images, focal_px=NOMINAL_FOCAL_PX) -> Intrinsics:
+    """Intrinsics of the super-pixel image from 8-bit S0 images of the ChArUco board.
+
+    Square pixels, no tangential distortion, k3 = 0. One image (the baseline,
+    board facing the camera) gives k1 and k2 from the straight tile edges, with
+    the nominal focal length `focal_px`; from two images on, the focal length is
+    fitted too, and from FREE_CENTRE_IMAGES on, the image centre.
+    """
     object_points, image_points = [], []
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 1e-4)
     for image in images:
-        found, corners = cv2.findChessboardCorners(image, inner_corners)
-        if not found:
+        found = detect_board(image)
+        if found is None:
             continue
-        corners = cv2.cornerSubPix(image, corners, (7, 7), (-1, -1), criteria)
-        object_points.append(board)
-        image_points.append(corners)
-    if len(object_points) < 3:
-        raise ValueError(f"board found in {len(object_points)} images, need 3")
+        corners, ids = found
+        objects, points = BOARD.matchImagePoints(corners[:, None], ids)
+        object_points.append(objects.astype(np.float32))
+        image_points.append(points.astype(np.float32))
+    n = len(object_points)
+    if n == 0:
+        raise ValueError(
+            f"board found in none of {len(images)} images (it needs {MIN_BOARD_SPAN} x "
+            f"{MIN_BOARD_SPAN} identified corners)"
+        )
     h, w = images[0].shape
-    # k3 is fixed at 0: 12 views do not separate it from k1 and k2.
-    rms, K, distortion, _, _ = cv2.calibrateCamera(
-        object_points, image_points, (w, h), None, None, flags=cv2.CALIB_FIX_K3
+    K = np.array([[focal_px, 0, (w - 1) / 2], [0, focal_px, (h - 1) / 2], [0, 0, 1]])
+    flags = (
+        cv2.CALIB_USE_INTRINSIC_GUESS
+        | cv2.CALIB_FIX_ASPECT_RATIO
+        | cv2.CALIB_ZERO_TANGENT_DIST
+        | cv2.CALIB_FIX_K3
     )
-    return Intrinsics(K, distortion.ravel()[:5], float(rms), len(object_points))
+    if n == 1:
+        flags |= cv2.CALIB_FIX_FOCAL_LENGTH
+    if n < FREE_CENTRE_IMAGES:
+        flags |= cv2.CALIB_FIX_PRINCIPAL_POINT
+    rms, K, distortion, _, _ = cv2.calibrateCamera(
+        object_points, image_points, (w, h), K, None, flags=flags
+    )
+    return Intrinsics(
+        K, distortion.ravel()[:5], float(rms), n, n == 1, n < FREE_CENTRE_IMAGES
+    )
 
 
 DICTIONARY = cv2.aruco.DICT_4X4_50
@@ -239,7 +290,7 @@ _MISSING_STEP = {  # Session field -> what to do first
 }
 
 
-INTRINSIC_IMAGES = 12  # board positions of the guided capture
+INTRINSIC_IMAGES = 7  # baseline + 6 tilted board positions (guided capture)
 POSITION_IMAGES = 5  # revolutions averaged for the pose
 
 

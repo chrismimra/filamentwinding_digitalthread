@@ -25,14 +25,41 @@ def _images(prefix):
     return [dataset.read_image(f) for f in sorted(IMAGES.glob(f"{prefix}_*.png"))]
 
 
-def test_intrinsics_recovered_from_the_checkerboard_images(truth):
-    result = calibration.intrinsic(_images("board"), inner_corners=(9, 6), tile_mm=40)
+def test_one_frontal_image_gives_the_distortion(truth):
+    # The baseline: the board facing the camera. The straight tile edges give
+    # k1 and k2; the focal length is the lens's nominal value.
     K = np.array(truth["K"])
-    assert result.used == 12
-    np.testing.assert_allclose(np.diag(result.K)[:2], np.diag(K)[:2], rtol=0.005)
-    np.testing.assert_allclose(result.K[:2, 2], K[:2, 2], atol=2.0)
+    result = calibration.intrinsic(_images("board")[:1], focal_px=K[0, 0])
+    assert result.used == 1 and result.focal_from_lens and result.centre_fixed
+    np.testing.assert_allclose(result.K, K)
     assert result.distortion[0] == pytest.approx(truth["distortion"][0], abs=0.01)
     assert result.rms_px < 0.5
+
+
+def test_tilted_images_fit_the_focal_length_and_centre(truth):
+    K = np.array(truth["K"])
+    nominal = 1.05 * K[0, 0]  # the lens is never exactly its nominal value
+    result = calibration.intrinsic(_images("board"), focal_px=nominal)
+    assert result.used == 7
+    assert not (result.focal_from_lens or result.centre_fixed)
+    np.testing.assert_allclose(np.diag(result.K)[:2], np.diag(K)[:2], rtol=0.005)
+    np.testing.assert_allclose(result.K[:2, 2], K[:2, 2], atol=3.0)
+    assert result.distortion[0] == pytest.approx(truth["distortion"][0], abs=0.01)
+    assert result.rms_px < 0.5
+
+
+def test_a_board_partly_outside_the_image_counts():
+    counts = [len(calibration.detect_board(image)[1]) for image in _images("board")]
+    assert min(counts) >= 16 and min(counts) < 54  # some views show part of it
+
+
+def test_too_little_of_the_board_does_not_count():
+    board = _images("board")[0]
+    h, w = board.shape
+    corner = np.ascontiguousarray(board[: h // 4, : w // 4])  # about 2 x 2 tiles
+    assert calibration.detect_board(corner) is None
+    with pytest.raises(ValueError, match="board found in none"):
+        calibration.intrinsic([corner])
 
 
 @pytest.fixture(scope="module")
@@ -130,7 +157,7 @@ def test_bundle_keeps_the_marker_table(banana, tmp_path, truth):
 def test_live_board_check_finds_the_board_only_where_it_is():
     board = _images("board")[0]
     corners = calibration.find_board(board)
-    assert corners is not None and corners.shape == (54, 2)
+    assert corners is not None and len(corners) >= 16
     h, w = board.shape
     assert (
         (corners >= 0).all() and (corners[:, 0] < w).all() and (corners[:, 1] < h).all()
