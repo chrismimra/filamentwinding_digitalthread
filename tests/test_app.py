@@ -34,11 +34,11 @@ def window(cylinder_geometry, tmp_path):
 def _press(gpio):
     """The pin passes the normally open switch on GPIO27 (with contact chatter)."""
     for _ in range(3):
-        gpio.drive_low()
         gpio.drive_high()
-    gpio.drive_low()
-    time.sleep(0.1)  # well above the debounce, also on a busy machine
+        gpio.drive_low()
     gpio.drive_high()
+    time.sleep(0.1)  # well above the debounce, also on a busy machine
+    gpio.drive_low()
     time.sleep(0.1)  # well above the debounce, also on a busy machine
 
 

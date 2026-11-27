@@ -1,8 +1,8 @@
 """Pin input on the Raspberry Pi (production, section 3).
 
 A normally open mechanical switch, pressed by the pin on the mandrel shaft,
-connects GPIO27 (physical pin 13) to GND (pin 14); the Pi's internal pull-up
-holds the input high while the contact is open. Each closing of the contact is
+connects GPIO27 (physical pin 13) to 3.3 V (pin 1 or 17); the Pi's internal
+pull-down holds the input low while the contact is open. Each closing of the contact is
 one pin pulse, which fires
 the camera by software trigger (the frame's timestamp still comes from the
 camera clock).
@@ -29,7 +29,7 @@ class GpioPin:
             from gpiozero.exc import GPIOZeroError
 
             try:
-                self._button = Button(gpio, pull_up=True)
+                self._button = Button(gpio, pull_up=False)  # pull-down, pressed = high
             except GPIOZeroError as error:
                 raise RuntimeError(
                     f"No GPIO{gpio} on this computer ({error}); choose the camera "
